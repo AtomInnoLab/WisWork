@@ -14,11 +14,34 @@ export type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
-export { suspendToolExecution } from './types'
 export { parseAgentResumeMessages } from './resume.js'
+export {
+  createToolExecutionSuspensionAuthority,
+  isToolExecutionSuspension,
+  suspendToolExecution,
+} from './types'
 export { composeSkills } from './skill'
-export type { AgentSkill } from './skill'
-export { AgentLoop, COMPLETED_VIA_TOOLS_TEXT, sanitizeAgentPayload } from './loop'
+export {
+  decodeOfficeScreenshotResult,
+  encodeOfficeScreenshotResult,
+  officeScreenshotBytes,
+  OFFICE_SCREENSHOT_PREVIEW_BYTES,
+  OFFICE_SCREENSHOT_SOURCE_BYTES,
+  OFFICE_SCREENSHOT_WIRE_BYTES,
+} from './office-tool-image'
+export type {
+  AgentSkill,
+  FinalResponseReviewContext,
+  PresentationTaskCompletion,
+  PresentationTaskHooks,
+  PresentationTaskPreparation,
+} from './skill'
+export {
+  AgentLoop,
+  COMPLETED_VIA_TOOLS_TEXT,
+  renderPresentationCompletionText,
+  sanitizeAgentPayload,
+} from './loop'
 export type {
   AgentLoopEvents,
   AgentLoopOptions,
@@ -28,3 +51,27 @@ export type {
 } from './loop'
 export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-transport'
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'
+export {
+  buildPresentationDesignDocument,
+  extractPresentationDesignContract,
+  extractPresentationDesignDocument,
+  formatPresentationDesignReadinessFailure,
+  parsePresentationDesignContract,
+  parsePresentationDesignPlan,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+  PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  revisePresentationDesignContract,
+  renderPresentationDesignContract,
+  transitionPresentationDesignContract,
+  validatePresentationDesignReadiness,
+} from './presentation-design-workflow'
+export type {
+  PresentationAssetStatus,
+  PresentationDesignAcceptanceRule,
+  PresentationDesignContract,
+  PresentationDesignInvalidation,
+  PresentationDesignInvalidationScope,
+  PresentationDesignPagePlan,
+  PresentationDesignPlan,
+  PresentationDesignStatus,
+} from './presentation-design-workflow'

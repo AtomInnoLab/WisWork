@@ -18,6 +18,8 @@ import {
 } from './presentation-rich-text-package.js'
 import { inspectPowerPointTableFingerprints } from './presentation-table-package.js'
 import { inspectPowerPointChartFingerprints } from './presentation-chart-package.js'
+import JSZip from 'jszip'
+import { OFFICE_SCREENSHOT_SOURCE_BYTES, officeScreenshotBytes } from '@wiswork/agent-core'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -27,6 +29,23 @@ export const MAX_POWERPOINT_VERIFY_OVERLAPS = 1_000
 export const MAX_POWERPOINT_VERIFY_SLIDES = 20
 export const MAX_POWERPOINT_VERIFY_SHAPES = MAX_POWERPOINT_SHAPES
 export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
+const MAX_POWERPOINT_DOCUMENT_BYTES = 64 * 1024 * 1024
+const POWERPOINT_SCREENSHOT_READ_TIMEOUT_MS = 15_000
+const NON_TEXT_SHAPE_TYPES = new Set([
+  'Image',
+  'Group',
+  'Line',
+  'Table',
+  'Chart',
+  'ContentApp',
+  'Diagram',
+  'Graphic',
+  'Ink',
+  'Media',
+  'Model3D',
+  'Ole',
+  'SmartArt',
+])
 
 function uncertainPowerPointState(errorLocation: string, cause?: unknown): Error {
   return Object.assign(
@@ -144,6 +163,15 @@ export type PowerPointMasterOperation =
       follow_master: boolean
       show_master_graphics: boolean
     }
+
+export interface PowerPointPresentationState {
+  slideCount: number
+  slideWidth?: number
+  slideHeight?: number
+  coordinateUnit?: 'pt'
+  selectedSlideIndexes: number[]
+  api: { v12: boolean; v14: boolean; v15: boolean; v18: boolean; v110: boolean }
+}
 
 export interface PowerPointMasterExecutionPreimage {
   before: PowerPointMasterState
@@ -305,6 +333,22 @@ export interface PowerPointAdapter {
     fallbackBase64?: string,
   ): Promise<PowerPointPageInspection>
   inspectStyleDependencies?(signal?: AbortSignal): Promise<PowerPointStyleDependencies>
+  getPresentationState(signal?: AbortSignal): Promise<PowerPointPresentationState>
+  readSlideBackground?(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    type: string
+    backgroundColor?: string
+    transparency?: number
+  }>
+  setSlideBackground?(
+    slideIndex: number,
+    color: string,
+    transparency: number,
+    signal?: AbortSignal,
+  ): Promise<void>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
     operations: PowerPointMasterOperation[],
@@ -361,10 +405,31 @@ export interface PowerPointAdapter {
     operations: PowerPointDeclarativeOperation[],
     signal?: AbortSignal,
   ): Promise<{ createdShapeIds: string[]; insertedSlideId?: string }>
+  readShapeTextStyle?(
+    slideIndex: number,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    color?: string
+    fontFamily?: string
+    fontSize?: number
+    bold?: boolean
+    italic?: boolean
+  }>
 }
 
 export type PowerPointDeclarativeOperation =
   | { op: 'set_shape_text'; slide_index: number; shape_id: string; text: string }
+  | {
+      op: 'set_shape_text_style'
+      slide_index: number
+      shape_id: string
+      color?: string
+      fontFamily?: string
+      fontSize?: number
+      bold?: boolean
+      italic?: boolean
+    }
   | { op: 'duplicate_slide'; slide_index: number }
   | {
       op: 'set_shape_geometry'
@@ -374,6 +439,7 @@ export type PowerPointDeclarativeOperation =
       top: number
       width: number
       height: number
+      reference_slide_index?: number
     }
   | {
       op: 'add_geometric_shape'
@@ -418,6 +484,8 @@ export type PowerPointDeclarativeOperation =
       align?: 'left' | 'center' | 'right'
       margin?: number
       verticalAlignment?: 'top' | 'middle' | 'bottom'
+      fontFamily?: string
+      italic?: boolean
     }
   | { op: 'delete_shape'; slide_index: number; shape_id: string }
 
@@ -427,7 +495,7 @@ function cancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
 }
 
-function runtime(minimumVersion: '1.4' | '1.8' | '1.10'): RuntimeRecord {
+function runtime(minimumVersion: '1.2' | '1.4' | '1.5' | '1.8' | '1.10'): RuntimeRecord {
   const root = globalThis as unknown as RuntimeRecord
   const office = root.Office as RuntimeRecord | undefined
   const powerPoint = root.PowerPoint as RuntimeRecord | undefined
@@ -465,6 +533,11 @@ function string(value: unknown, maximum = 256): string {
   return typeof value === 'string' ? value.slice(0, maximum) : ''
 }
 
+function equivalentText(actual: string, expected: string): boolean {
+  const normalize = (value: string) => value.replace(/\r\n|\r|\v/g, '\n')
+  return normalize(actual) === normalize(expected)
+}
+
 function shapeInfo(value: RuntimeRecord): PowerPointShape {
   return {
     id: string(value.id),
@@ -493,29 +566,34 @@ function explicitCanvasBackground(
   )
 }
 
+function isContainedImageTextOverlay(a: PowerPointShape, b: PowerPointShape): boolean {
+  const image =
+    a.type.toLowerCase() === 'image' ? a : b.type.toLowerCase() === 'image' ? b : undefined
+  const text = image === a ? b : image === b ? a : undefined
+  if (!image || text?.type.toLowerCase() !== 'textbox') return false
+  return (
+    text.left >= image.left &&
+    text.top >= image.top &&
+    text.left + text.width <= image.left + image.width &&
+    text.top + text.height <= image.top + image.height
+  )
+}
+
 function loadSlides(slides: RuntimeRecord): void {
-  ;(slides.load as (properties: unknown) => void)({
-    $top: MAX_POWERPOINT_VERIFY_SLIDES + 1,
-    id: true,
-  })
+  // PowerPoint for Mac is more reliable with the documented collection path than
+  // with OfficeExtension load options such as $top. Bound the loaded result after sync.
+  ;(slides.load as (properties: string) => void)('items/id')
 }
 
 function loadShapes(
   shapes: RuntimeRecord,
-  limit = MAX_POWERPOINT_VERIFY_SHAPES,
+  _limit = MAX_POWERPOINT_VERIFY_SHAPES,
   strong = false,
 ): void {
-  ;(shapes.load as (properties: unknown) => void)({
-    $top: limit + 1,
-    id: true,
-    name: true,
-    type: true,
-    left: true,
-    top: true,
-    width: true,
-    height: true,
-    ...(strong ? { rotation: true, altTextTitle: true, altTextDescription: true } : {}),
-  })
+  ;(shapes.load as (properties: string) => void)(
+    'items/id,items/name,items/type,items/left,items/top,items/width,items/height' +
+      (strong ? ',items/rotation,items/altTextTitle,items/altTextDescription' : ''),
+  )
 }
 
 async function getSlide(
@@ -583,6 +661,80 @@ async function readCompleteSlideOrder(
   )
     throw new Error('office_read_failed')
   return ids as string[]
+}
+
+async function getCompressedDocumentSlideCount(signal?: AbortSignal): Promise<number> {
+  cancelled(signal)
+  const root = globalThis as unknown as RuntimeRecord
+  const office = root.Office as RuntimeRecord | undefined
+  const document = (office?.context as RuntimeRecord | undefined)?.document as
+    RuntimeRecord | undefined
+  const compressed = (office?.FileType as RuntimeRecord | undefined)?.Compressed
+  if (typeof document?.getFileAsync !== 'function' || compressed === undefined)
+    throw new Error('office_api_unsupported')
+  const file = await new Promise<RuntimeRecord>((resolve, reject) => {
+    ;(
+      document.getFileAsync as (
+        type: unknown,
+        options: object,
+        callback: (result: RuntimeRecord) => void,
+      ) => void
+    )(compressed, { sliceSize: 4 * 1024 * 1024 }, (result) => {
+      if (result.status !== 'succeeded' || !result.value) reject(new Error('office_read_failed'))
+      else resolve(result.value as RuntimeRecord)
+    })
+  })
+  try {
+    const size = finite(file.size)
+    const sliceCount = finite(file.sliceCount)
+    if (
+      !Number.isSafeInteger(size) ||
+      size < 1 ||
+      size > MAX_POWERPOINT_DOCUMENT_BYTES ||
+      !Number.isSafeInteger(sliceCount) ||
+      sliceCount < 1 ||
+      sliceCount > 1_024
+    )
+      throw new Error('office_read_failed')
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (let index = 0; index < sliceCount; index += 1) {
+      cancelled(signal)
+      const slice = await new Promise<RuntimeRecord>((resolve, reject) => {
+        ;(file.getSliceAsync as (index: number, callback: (result: RuntimeRecord) => void) => void)(
+          index,
+          (result) => {
+            if (result.status !== 'succeeded' || !result.value)
+              reject(new Error('office_read_failed'))
+            else resolve(result.value as RuntimeRecord)
+          },
+        )
+      })
+      const data = slice.data
+      if (
+        !(data instanceof Uint8Array) &&
+        (!Array.isArray(data) ||
+          data.some((value) => !Number.isInteger(value) || value < 0 || value > 255))
+      )
+        throw new Error('office_read_failed')
+      const chunk = data instanceof Uint8Array ? data : Uint8Array.from(data as number[])
+      if (offset + chunk.byteLength > bytes.byteLength) throw new Error('office_read_failed')
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    if (offset !== bytes.byteLength) throw new Error('office_read_failed')
+    const zip = await JSZip.loadAsync(bytes, { createFolders: false })
+    const slideCount = Object.keys(zip.files).filter((path) =>
+      /^ppt\/slides\/slide[1-9]\d*\.xml$/.test(path),
+    ).length
+    if (slideCount > 100_000) throw new Error('office_read_failed')
+    return slideCount
+  } finally {
+    if (typeof file.closeAsync === 'function')
+      await new Promise<void>((resolve) =>
+        (file.closeAsync as (callback: () => void) => void)(() => resolve()),
+      )
+  }
 }
 
 function hash(value: string): string {
@@ -1050,8 +1202,152 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     }
   }
 
+  async getPresentationState(signal?: AbortSignal): Promise<PowerPointPresentationState> {
+    cancelled(signal)
+    const root = globalThis as unknown as RuntimeRecord
+    const requirements = (
+      (root.Office as RuntimeRecord | undefined)?.context as RuntimeRecord | undefined
+    )?.requirements as RuntimeRecord | undefined
+    const supports = requirements?.isSetSupported
+    const api = (version: string) => {
+      try {
+        return (
+          typeof supports === 'function' &&
+          (supports as (name: string, version: string) => boolean).call(
+            requirements,
+            'PowerPointApi',
+            version,
+          ) === true
+        )
+      } catch {
+        return false
+      }
+    }
+    const apiSupport = {
+      v12: api('1.2'),
+      v14: api('1.4'),
+      v15: api('1.5'),
+      v18: api('1.8'),
+      v110: api('1.10'),
+    }
+    let slideCount: number
+    try {
+      slideCount = await this.run('1.2', async (context) =>
+        getSlideCount(
+          context,
+          (context.presentation as RuntimeRecord).slides as RuntimeRecord,
+          signal,
+        ),
+      )
+    } catch (error) {
+      if (signal?.aborted) throw error
+      try {
+        slideCount = await this.run('1.2', async (context) => {
+          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+          if (typeof slides?.load !== 'function') throw error
+          ;(slides.load as (properties: string) => void)('items/id')
+          await sync(context, signal)
+          const items = slides.items
+          if (!Array.isArray(items) || items.length > 100_000) throw error
+          return items.length
+        })
+      } catch (fallbackError) {
+        if (signal?.aborted) throw fallbackError
+        slideCount = await getCompressedDocumentSlideCount(signal)
+      }
+    }
+    let selectedSlideIndexes: number[] = []
+    if (apiSupport.v15) {
+      try {
+        selectedSlideIndexes = await this.run('1.5', async (context) => {
+          const presentation = context.presentation as RuntimeRecord
+          const slides = presentation.slides as RuntimeRecord
+          if (
+            typeof slides?.load !== 'function' ||
+            typeof presentation.getSelectedSlides !== 'function'
+          )
+            throw new Error('office_api_unsupported')
+          const selected = (presentation.getSelectedSlides as () => RuntimeRecord)()
+          if (typeof selected?.load !== 'function') throw new Error('office_api_unsupported')
+          ;(slides.load as (properties: string) => void)('items/id')
+          ;(selected.load as (properties: string) => void)('items/id')
+          await sync(context, signal)
+          const selectedIds = new Set(
+            ((selected.items as RuntimeRecord[] | undefined) ?? []).map((item) => string(item.id)),
+          )
+          return ((slides.items as RuntimeRecord[] | undefined) ?? []).flatMap((item, index) =>
+            selectedIds.has(string(item.id)) ? [index] : [],
+          )
+        })
+      } catch (error) {
+        if (signal?.aborted) throw error
+        selectedSlideIndexes = []
+      }
+    }
+    let dimensions: Pick<
+      PowerPointPresentationState,
+      'slideWidth' | 'slideHeight' | 'coordinateUnit'
+    > = {}
+    if (apiSupport.v110) {
+      try {
+        dimensions = await this.run('1.10', async (context) => {
+          const setup = (context.presentation as RuntimeRecord).pageSetup as RuntimeRecord
+          if (typeof setup?.load !== 'function') throw new Error('office_api_unsupported')
+          ;(setup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
+          await sync(context, signal)
+          const slideWidth = finite(setup.slideWidth)
+          const slideHeight = finite(setup.slideHeight)
+          if (slideWidth <= 0 || slideHeight <= 0) throw new Error('office_read_failed')
+          return { slideWidth, slideHeight, coordinateUnit: 'pt' as const }
+        })
+      } catch (error) {
+        if (signal?.aborted) throw error
+        // Older/partial hosts remain readable. Never invent a default canvas size.
+      }
+    }
+    return { slideCount, selectedSlideIndexes, api: apiSupport, ...dimensions }
+  }
+  async readShapeTextStyle(slideIndex: number, shapeId: string, signal?: AbortSignal) {
+    return this.run('1.4', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const slide = await getSlide(
+        context,
+        presentation.slides as RuntimeRecord,
+        slideIndex,
+        signal,
+      )
+      const shape = ((slide.shapes as RuntimeRecord).getItem as (id: string) => RuntimeRecord)(
+        shapeId,
+      )
+      const range = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
+        RuntimeRecord | undefined
+      if (!range || typeof range.load !== 'function') throw new Error('office_api_unsupported')
+      ;(range.load as (properties: string) => void)('text')
+      await sync(context, signal)
+      const text = typeof range.text === 'string' ? range.text : ''
+      if (text.length > MAX_POWERPOINT_TEXT) throw new Error('office_read_failed')
+      // Exclude an implicit trailing paragraph marker, but verify all actual text rather
+      // than accepting the first character as evidence for the whole shape.
+      const contentRange =
+        text.length > 0 && typeof range.getSubstring === 'function'
+          ? (range.getSubstring as (start: number, length: number) => RuntimeRecord)(0, text.length)
+          : range
+      const font = contentRange.font as RuntimeRecord | undefined
+      if (!font || typeof font.load !== 'function') throw new Error('office_api_unsupported')
+      ;(font.load as (properties: string) => void)('color,name,size,bold,italic')
+      await sync(context, signal)
+      return {
+        color: typeof font.color === 'string' ? string(font.color) : undefined,
+        fontFamily: typeof font.name === 'string' ? string(font.name) : undefined,
+        fontSize:
+          typeof font.size === 'number' && Number.isFinite(font.size) ? font.size : undefined,
+        bold: typeof font.bold === 'boolean' ? font.bold : undefined,
+        italic: typeof font.italic === 'boolean' ? font.italic : undefined,
+      }
+    })
+  }
   private run<T>(
-    minimumVersion: '1.4' | '1.8' | '1.10',
+    minimumVersion: '1.2' | '1.4' | '1.5' | '1.8' | '1.10',
     callback: (context: RuntimeRecord) => Promise<T>,
   ): Promise<T> {
     const powerPoint = runtime(minimumVersion)
@@ -1083,6 +1379,63 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   async inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState> {
     cancelled(signal)
     return this.run('1.10', (context) => inspectMasterState(context, signal))
+  }
+
+  async readSlideBackground(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    type: string
+    backgroundColor?: string
+    transparency?: number
+  }> {
+    cancelled(signal)
+    return this.run('1.10', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      const item = await getSlide(context, slides, slideIndex, signal)
+      const fill = (item.background as RuntimeRecord | undefined)?.fill as RuntimeRecord | undefined
+      if (!fill || typeof fill.load !== 'function') throw new Error('office_api_unsupported')
+      ;(fill.load as (properties: string) => void)('type')
+      const solid =
+        typeof fill.getSolidFillOrNullObject === 'function'
+          ? (fill.getSolidFillOrNullObject as () => RuntimeRecord)()
+          : undefined
+      if (solid && typeof solid.load === 'function')
+        (solid.load as (properties: string) => void)('color,transparency')
+      await sync(context, signal)
+      return {
+        slideId: string(item.id),
+        type: string(fill.type),
+        ...(solid && !solid.isNullObject && typeof solid.color === 'string'
+          ? { backgroundColor: solid.color }
+          : {}),
+        ...(solid && !solid.isNullObject && typeof solid.transparency === 'number'
+          ? { transparency: solid.transparency }
+          : {}),
+      }
+    })
+  }
+
+  async setSlideBackground(
+    slideIndex: number,
+    color: string,
+    transparency: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    await this.run('1.10', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      const item = await getSlide(context, slides, slideIndex, signal)
+      const fill = (item.background as RuntimeRecord | undefined)?.fill as RuntimeRecord | undefined
+      if (!fill || typeof fill.setSolidFill !== 'function')
+        throw new Error('office_api_unsupported')
+      ;(fill.setSolidFill as (options: { color: string; transparency: number }) => void)({
+        color,
+        transparency,
+      })
+      await sync(context, signal)
+    })
   }
 
   async executeMasterOperations(
@@ -1486,82 +1839,130 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
 
   async listSlideShapes(slideIndex: number, signal?: AbortSignal): Promise<SlideShapesResult> {
     cancelled(signal)
-    return this.run('1.4', async (context) => {
-      const presentation = context.presentation as RuntimeRecord
-      const slides = presentation.slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
-      const shapes = slide.shapes as RuntimeRecord
-      loadShapes(shapes, MAX_POWERPOINT_SHAPES)
-      await sync(context, signal)
-      const items = shapes.items as RuntimeRecord[]
-      if (items.length > MAX_POWERPOINT_SHAPES) throw new Error('office_read_failed')
-      return { slideId: string(slide.id), slideIndex, shapes: items.map(shapeInfo) }
-    })
+    const inventory = (properties: string) =>
+      this.run('1.4', async (context) => {
+        const presentation = context.presentation as RuntimeRecord
+        const slides = presentation.slides as RuntimeRecord
+        const slide = await getSlide(context, slides, slideIndex, signal)
+        const shapes = slide.shapes as RuntimeRecord
+        if (typeof shapes?.load !== 'function') throw new Error('office_api_unsupported')
+        ;(shapes.load as (value: string) => void)(properties)
+        await sync(context, signal)
+        const items = shapes.items as RuntimeRecord[]
+        if (!Array.isArray(items) || items.length > MAX_POWERPOINT_SHAPES)
+          throw new Error('office_read_failed')
+        return { slideId: string(slide.id), slideIndex, shapes: items.map(shapeInfo) }
+      })
+    try {
+      return await inventory(
+        'items/id,items/name,items/type,items/left,items/top,items/width,items/height',
+      )
+    } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error
+      return inventory('items/id,items/name,items/type')
+    }
   }
 
   async screenshotSlide(
     slideIndex: number,
-    signal?: AbortSignal,
+    outerSignal?: AbortSignal,
   ): Promise<{ slideId: string; base64: string; mime: 'image/png' }> {
-    cancelled(signal)
+    cancelled(outerSignal)
+    const controller = new AbortController()
+    const signal = controller.signal
     let targetSlideId: string | undefined
-    try {
-      return await this.runScreenshot(
-        '1.8',
-        async (context) => {
-          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-          const slide = await getSlide(context, slides, slideIndex, signal)
-          const slideId = string(slide.id)
-          if (targetSlideId && targetSlideId !== slideId)
-            throw new Error('office_concurrent_change')
-          targetSlideId = slideId
-          if (typeof slide.getImageAsBase64 !== 'function')
-            throw Object.assign(new Error('office_api_unsupported'), {
-              code: 'office_screenshot_unavailable',
-            })
-          const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-            width: 960,
-          })
-          await sync(context, signal)
-          if (slide.id !== slideId) throw new Error('office_concurrent_change')
-          if (
-            typeof image.value !== 'string' ||
-            typeof slide.id !== 'string' ||
-            !slide.id ||
-            slide.id.length > 256
-          )
-            throw new Error('office_read_failed')
-          if (image.value.length > Math.ceil((64 * 1024) / 3) * 4)
-            throw Object.assign(new Error('office_image_too_large'), {
-              code: 'office_image_too_large',
-            })
-          const base64 = validatePowerPointPageScreenshot(image.value)
-          if (atob(base64).length > 64 * 1024)
-            throw Object.assign(new Error('office_image_too_large'), {
-              code: 'office_image_too_large',
-            })
-          return { slideId, base64, mime: 'image/png' }
-        },
-        signal,
-      )
-    } catch (error) {
-      const code =
-        error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
-      if (
-        !targetSlideId ||
-        ![
-          'office_screenshot_unavailable',
-          'office_image_too_large',
-          'ActivityLimitReached',
-          'Timeout',
-        ].includes(String(code))
-      )
-        throw error
-      const failure = error instanceof Error ? error : new Error(String(error))
-      throw Object.assign(new Error(failure.message, { cause: failure }), {
+    const deadline = Date.now() + POWERPOINT_SCREENSHOT_READ_TIMEOUT_MS
+    let rejectStopped!: (error: Error) => void
+    const stopped = new Promise<never>((_resolve, reject) => {
+      rejectStopped = reject
+    })
+    const failure = (code: string, cause?: unknown) =>
+      Object.assign(new Error(code, { cause }), {
         code,
-        targetSlideId,
+        ...(targetSlideId ? { targetSlideId } : {}),
       })
+    const stop = (code: string) => {
+      controller.abort()
+      rejectStopped(failure(code))
+    }
+    const abort = () => stop('cancelled')
+    outerSignal?.addEventListener('abort', abort, { once: true })
+    const timer = setTimeout(
+      () => stop('office_screenshot_unavailable'),
+      POWERPOINT_SCREENSHOT_READ_TIMEOUT_MS,
+    )
+    const capture = async () => {
+      let lastError: unknown
+      for (const options of [{ width: 960 }, { height: 540 }, undefined]) {
+        cancelled(signal)
+        try {
+          const result = await this.runScreenshot(
+            '1.8',
+            async (context) => {
+              cancelled(signal)
+              const slide = await getSlide(
+                context,
+                (context.presentation as RuntimeRecord).slides as RuntimeRecord,
+                slideIndex,
+                signal,
+              )
+              const slideId = string(slide.id)
+              if (!slideId || slideId.length > 256) throw new Error('office_read_failed')
+              if (targetSlideId && targetSlideId !== slideId)
+                throw new Error('office_concurrent_change')
+              targetSlideId = slideId
+              if (typeof slide.getImageAsBase64 !== 'function')
+                throw failure('office_screenshot_unavailable')
+              const image = (
+                slide.getImageAsBase64 as (options?: {
+                  width?: number
+                  height?: number
+                }) => RuntimeRecord
+              )(options)
+              await sync(context, signal)
+              cancelled(signal)
+              if (Date.now() >= deadline) throw failure('office_screenshot_unavailable')
+              if (slide.id !== slideId) throw new Error('office_concurrent_change')
+              officeScreenshotBytes(
+                { base64: image.value as string, mime: 'image/png' },
+                OFFICE_SCREENSHOT_SOURCE_BYTES,
+              )
+              return {
+                slideId,
+                base64: validatePowerPointPageScreenshot(image.value),
+                mime: 'image/png' as const,
+              }
+            },
+            signal,
+          )
+          if (Date.now() >= deadline) throw failure('office_screenshot_unavailable')
+          cancelled(signal)
+          return result
+        } catch (error) {
+          if (Date.now() >= deadline && !outerSignal?.aborted)
+            throw failure('office_screenshot_unavailable', error)
+          if (
+            signal.aborted ||
+            (error instanceof Error &&
+              [
+                'cancelled',
+                'invalid_tool_input',
+                'office_api_unsupported',
+                'office_concurrent_change',
+              ].includes(error.message))
+          )
+            throw error
+          lastError = error
+        }
+      }
+      throw failure('office_screenshot_unavailable', lastError)
+    }
+    try {
+      return await Promise.race([capture(), stopped])
+    } finally {
+      clearTimeout(timer)
+      outerSignal?.removeEventListener('abort', abort)
+      controller.abort()
     }
   }
 
@@ -1859,6 +2260,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               explicitCanvasBackground(b, slideWidth, slideHeight)
             )
               continue
+            if (isContainedImageTextOverlay(a, b)) continue
             const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
             const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
             if (overlapX > 0 && overlapY > 0) {
@@ -1917,18 +2319,43 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const items = shapes.items as RuntimeRecord[]
       if (!Array.isArray(items) || items.length > MAX_POWERPOINT_SHAPES)
         throw new Error('office_read_failed')
+      const supportsNullFrames = Office.context.requirements.isSetSupported('PowerPointApi', '1.10')
+      const textFrames = new Map<RuntimeRecord, RuntimeRecord>()
+      const nullableFrames = new Set<RuntimeRecord>()
       for (const shape of items) {
-        const textFrame = shape.textFrame as RuntimeRecord | undefined
-        if (textFrame && typeof textFrame.load === 'function')
-          (textFrame.load as (properties: string) => void)('hasText')
+        const useNullFrame =
+          supportsNullFrames && typeof shape.getTextFrameOrNullObject === 'function'
+        // Unknown legacy types still take the normal read path and fail closed.
+        if (!useNullFrame && NON_TEXT_SHAPE_TYPES.has(string(shape.type))) continue
+        const textFrame = useNullFrame
+          ? (shape.getTextFrameOrNullObject as () => RuntimeRecord)()
+          : (shape.textFrame as RuntimeRecord | undefined)
+        if (textFrame && typeof textFrame.load === 'function') {
+          textFrames.set(shape, textFrame)
+          if (useNullFrame) nullableFrames.add(textFrame)
+          else (textFrame.load as (properties: string) => void)('hasText')
+        }
       }
+      // OrNullObject resolves isNullObject on sync without a property load.
       await sync(context, signal)
+      for (const [shape, textFrame] of textFrames) {
+        if (!nullableFrames.has(textFrame)) continue
+        if (textFrame.isNullObject === true) textFrames.delete(shape)
+        else if (textFrame.isNullObject === false)
+          (textFrame.load as (properties: string) => void)('hasText')
+        else throw new Error('office_read_failed')
+      }
+      if (nullableFrames.size > 0) await sync(context, signal)
+      for (const textFrame of textFrames.values()) {
+        const textRange = textFrame.textRange as RuntimeRecord | undefined
+        if (textFrame.hasText === true && textRange && typeof textRange.load === 'function')
+          (textRange.load as (properties: string) => void)('text')
+        const font = textRange?.font as RuntimeRecord | undefined
+        if (textFrame.hasText === true && font && typeof font.load === 'function')
+          (font.load as (properties: string) => void)('color,name,size,bold,italic')
+      }
       const tables = new Map<RuntimeRecord, RuntimeRecord>()
       for (const shape of items) {
-        const textFrame = shape.textFrame as RuntimeRecord | undefined
-        const textRange = textFrame?.textRange as RuntimeRecord | undefined
-        if (textFrame?.hasText === true && textRange && typeof textRange.load === 'function')
-          (textRange.load as (properties: string) => void)('text')
         if (includeShapes && shape.type === 'Table') {
           if (typeof shape.getTable !== 'function') throw new Error('office_api_unsupported')
           const table = (shape.getTable as () => RuntimeRecord)()
@@ -1955,7 +2382,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               ))
           )
             throw new Error('office_read_failed')
-          const textFrame = shape.textFrame as RuntimeRecord | undefined
+          const textFrame = textFrames.get(shape)
           const textRange = textFrame?.textRange as RuntimeRecord | undefined
           const table = tables.get(shape)
           let tableValues: string[][] | undefined
@@ -2005,6 +2432,17 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
                   rotation: shape.rotation as number,
                   altTextTitle: shape.altTextTitle as string,
                   altTextDescription: shape.altTextDescription as string,
+                }
+              : {}),
+            ...(textFrame?.hasText === true && textRange?.font
+              ? {
+                  textStyle: {
+                    color: string((textRange.font as RuntimeRecord).color),
+                    fontFamily: string((textRange.font as RuntimeRecord).name),
+                    fontSize: finite((textRange.font as RuntimeRecord).size),
+                    bold: (textRange.font as RuntimeRecord).bold === true,
+                    italic: (textRange.font as RuntimeRecord).italic === true,
+                  },
                 }
               : {}),
           }
@@ -2636,6 +3074,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         if (
           operation.op === 'set_shape_text' ||
           operation.op === 'set_shape_geometry' ||
+          operation.op === 'set_shape_text_style' ||
           operation.op === 'delete_shape'
         ) {
           const shapes = slide.shapes as RuntimeRecord
@@ -2655,6 +3094,19 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             queued.push(() => {
               textRange.text = operation.text
             })
+          } else if (operation.op === 'set_shape_text_style') {
+            const range = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
+              RuntimeRecord | undefined
+            const font = range?.font as RuntimeRecord | undefined
+            if (!font) throw new Error('office_api_unsupported')
+            queued.push(() => {
+              if (operation.color !== undefined) font.color = operation.color
+              if (operation.fontFamily !== undefined) font.name = operation.fontFamily
+              if (operation.fontSize !== undefined) font.size = operation.fontSize
+              if (operation.bold !== undefined) font.bold = operation.bold
+              if (operation.italic !== undefined) font.italic = operation.italic
+            })
+            hasUnrecoverableMutation = true
           } else if (operation.op === 'set_shape_geometry') {
             if (typeof shape.load !== 'function') throw new Error('office_api_unsupported')
             ;(shape.load as (properties: string) => void)('left,top,width,height')
@@ -2707,15 +3159,22 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             }
             if (
               operation.fontFace ||
+              operation.fontFamily ||
+              operation.italic !== undefined ||
               operation.fontSize ||
               operation.color ||
               operation.bold !== undefined
             ) {
               const font = ((created.textFrame as RuntimeRecord).textRange as RuntimeRecord)
                 .font as RuntimeRecord
-              if (operation.fontFace) font.name = operation.fontFace
+              if (operation.fontFace || operation.fontFamily)
+                font.name = operation.fontFamily ?? operation.fontFace
+              if (operation.italic !== undefined) font.italic = operation.italic
               if (operation.fontSize) font.size = operation.fontSize
-              if (operation.color) font.color = `#${operation.color}`
+              if (operation.color)
+                font.color = operation.color.startsWith('#')
+                  ? operation.color
+                  : `#${operation.color}`
               if (operation.bold !== undefined) font.bold = operation.bold
             }
             if (operation.align) {
@@ -2864,7 +3323,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               await sync(context, signal)
               return [...trackedByTarget.values()].every((mutation) => {
                 if (mutation.kind === 'text')
-                  return string(mutation.target.text, MAX_POWERPOINT_TEXT) === mutation.after
+                  return equivalentText(
+                    string(mutation.target.text, MAX_POWERPOINT_TEXT),
+                    mutation.after,
+                  )
                 return [
                   finite(mutation.target.left),
                   finite(mutation.target.top),
@@ -2891,8 +3353,8 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             for (const mutation of trackedByTarget.values()) {
               if (mutation.kind === 'text') {
                 const current = string(mutation.target.text, MAX_POWERPOINT_TEXT)
-                if (current === mutation.before) beforeCount += 1
-                else if (current === mutation.after) afterCount += 1
+                if (equivalentText(current, mutation.before ?? '')) beforeCount += 1
+                else if (equivalentText(current, mutation.after)) afterCount += 1
                 else return 'third'
               } else {
                 const current = [

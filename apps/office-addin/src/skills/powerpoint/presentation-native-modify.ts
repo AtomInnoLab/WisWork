@@ -1,3 +1,4 @@
+import { verifyNativeTextStylePackage } from './presentation-native-text-style.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
@@ -159,7 +160,7 @@ export function createPresentationNativeModifySkill(options: Options) {
           !(['left', 'top', 'width', 'height'] as const).every((key) => Number.isFinite(shape[key]))
         )
           throw Error('office_read_failed')
-        if (op.op === 'set_shape_text') {
+        if (op.op === 'set_shape_text' || op.op === 'set_shape_text_style') {
           const read = await options.adapter.readSlideText(p.slideIndex, op.shape_id, signal)
           await guard(r.documentId, signal, token, newWrite)
           if (
@@ -206,6 +207,7 @@ export function createPresentationNativeModifySkill(options: Options) {
       if (!same(options.readExistingBatch(r.changeId), r))
         throw Error('presentation_existing_batch_stale')
     }
+    let styleMismatch: string | undefined
     const verified = await readUntilConverged({
       signal,
       accept: Boolean,
@@ -230,13 +232,46 @@ export function createPresentationNativeModifySkill(options: Options) {
             throw Error('presentation_document_changed')
           return text.text === op.text
         }
+        if (op.op === 'set_shape_text_style') {
+          if (!options.adapter.readShapeTextStyle) throw Error('office_api_unsupported')
+          const style = await options.adapter.readShapeTextStyle(
+            op.slide_index,
+            op.shape_id,
+            signal,
+          )
+          await current()
+          const checks = {
+            color: op.color === undefined || style.color?.toUpperCase() === op.color.toUpperCase(),
+            fontFamily:
+              op.fontFamily === undefined ||
+              style.fontFamily?.trim().replace(/\s+/g, ' ').toLowerCase() ===
+                op.fontFamily.trim().replace(/\s+/g, ' ').toLowerCase(),
+            fontSize:
+              op.fontSize === undefined ||
+              (style.fontSize !== undefined && Math.abs(style.fontSize - op.fontSize) <= 0.1),
+            bold: op.bold === undefined || style.bold === op.bold,
+            italic: op.italic === undefined || style.italic === op.italic,
+          }
+          styleMismatch = Object.entries(checks).find(([, matches]) => !matches)?.[0]
+          return styleMismatch === undefined
+        }
         return (['left', 'top', 'width', 'height'] as const).every(
           (key) => Number.isFinite(shape[key]) && Math.abs(shape[key] - op[key]) <= 0.01,
         )
       },
     })
     await current()
-    if (!verified) throw Error('office_verify_failed')
+    if (!verified)
+      throw Object.assign(
+        Error('office_verify_failed'),
+        styleMismatch
+          ? {
+              debugInfo: {
+                errorLocation: `PowerPoint.operations.${r.nextIndex}.set_shape_text_style.${styleMismatch}`,
+              },
+            }
+          : {},
+      )
   }
   const run = async (
     r: PresentationNativeModifyBatch,
@@ -450,6 +485,17 @@ export function createPresentationNativeModifySkill(options: Options) {
       r = next
       await check(r, signal, token, newWrite)
       await guard(r.documentId, signal, token, newWrite)
+      const beforeStylePackage =
+        op.op === 'set_shape_text_style'
+          ? await options.adapter.exportPresentationPagePackage!(p.hostSlideId, signal)
+          : undefined
+      if (
+        beforeStylePackage &&
+        (beforeStylePackage.slideId !== p.hostSlideId ||
+          !same(beforeStylePackage.slideIds, r.beforeSlideIds))
+      )
+        throw Error('presentation_document_changed')
+      await guard(r.documentId, signal, token, newWrite)
       await options.adapter.executeDeclarative([structuredClone(op)], signal)
       await guard(r.documentId, signal, token, newWrite)
       await verifyTarget(r, op, p.hostSlideId, signal, token, newWrite)
@@ -469,7 +515,7 @@ export function createPresentationNativeModifySkill(options: Options) {
           ? Boolean(afterTarget)
           : !beforeTarget ||
             !afterTarget ||
-            (op.op === 'set_shape_text'
+            (['set_shape_text', 'set_shape_text_style'].includes(op.op)
               ? !same(beforeTarget, afterTarget)
               : !same(
                   [beforeTarget.id, beforeTarget.name, beforeTarget.type],
@@ -502,7 +548,9 @@ export function createPresentationNativeModifySkill(options: Options) {
             !current ||
             (op.op === 'set_shape_text'
               ? !same({ ...original, text: '' }, { ...current, text: '' })
-              : !same(nonGeometry(original), nonGeometry(current))))
+              : op.op === 'set_shape_text_style'
+                ? !same({ ...original, textStyle: undefined }, { ...current, textStyle: undefined })
+                : !same(nonGeometry(original), nonGeometry(current))))
       )
         throw Error('office_verify_failed')
       const afterIds = {
@@ -540,7 +588,8 @@ export function createPresentationNativeModifySkill(options: Options) {
         if (
           comparedIds.some(
             (id) =>
-              !same(
+              !(id === op.shape_id && op.op === 'set_shape_text_style') &&
+              (!same(
                 id === op.shape_id && op.op === 'set_shape_text'
                   ? withoutRunText(beforeRichText.shapes[id])
                   : beforeRichText.shapes[id],
@@ -548,11 +597,11 @@ export function createPresentationNativeModifySkill(options: Options) {
                   ? withoutRunText(afterRichText!.shapes[id])
                   : afterRichText!.shapes[id],
               ) ||
-              (id === op.shape_id && op.op === 'set_shape_text'
-                ? beforeRichText.fingerprints[id]!.formatting !==
-                  afterRichText!.fingerprints[id]!.formatting
-                : beforeRichText.fingerprints[id]!.content !==
-                  afterRichText!.fingerprints[id]!.content),
+                (id === op.shape_id && op.op === 'set_shape_text'
+                  ? beforeRichText.fingerprints[id]!.formatting !==
+                    afterRichText!.fingerprints[id]!.formatting
+                  : beforeRichText.fingerprints[id]!.content !==
+                    afterRichText!.fingerprints[id]!.content)),
           )
         )
           throw Error('office_verify_failed')
@@ -576,6 +625,7 @@ export function createPresentationNativeModifySkill(options: Options) {
       if (beforePackage?.ordinary && afterPackage?.ordinary) {
         if (
           afterIds.ordinary.some((id) => {
+            if (id === op.shape_id && op.op === 'set_shape_text_style') return false
             const field =
               id !== op.shape_id ? 'exact' : op.op === 'set_shape_text' ? 'formatting' : 'content'
             return beforePackage.ordinary[id]?.[field] !== afterPackage.ordinary[id]?.[field]
@@ -589,6 +639,18 @@ export function createPresentationNativeModifySkill(options: Options) {
       await guard(r.documentId, signal, token, newWrite)
       if (exported.slideId !== p.hostSlideId || !same(exported.slideIds, r.beforeSlideIds))
         throw Error('presentation_document_changed')
+      if (op.op === 'set_shape_text_style') {
+        const target = beforeRichText?.shapes[op.shape_id] as
+          { packageShapeId?: unknown } | undefined
+        if (!beforeStylePackage || typeof target?.packageShapeId !== 'string')
+          throw Error('office_api_unsupported')
+        await verifyNativeTextStylePackage(
+          beforeStylePackage.base64,
+          exported.base64,
+          target.packageShapeId,
+          op,
+        )
+      }
       const digest = await presentationPackageDigest(exported.base64, signal)
       const { inFlightIndex: _inflight, ...rest } = r
       const acknowledged: PresentationNativeModifyBatch = {

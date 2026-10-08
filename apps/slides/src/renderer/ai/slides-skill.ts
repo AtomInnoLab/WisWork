@@ -1,4 +1,19 @@
-import type { AgentSkill, ToolDisplay } from '@wiswork/agent-core'
+import {
+  extractPresentationDesignContract,
+  formatPresentationDesignReadinessFailure,
+  parsePresentationDesignContract,
+  parsePresentationDesignPlan,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+  PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  renderPresentationDesignContract,
+  transitionPresentationDesignContract,
+  validatePresentationDesignReadiness,
+  type AgentImage,
+  type AgentSkill,
+  type FinalResponseReviewContext,
+  type ToolDisplay,
+  type PresentationDesignContract,
+} from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
   PictureRenderNode,
@@ -6,10 +21,46 @@ import type {
   RenderSlide,
   ShapeRenderNode,
 } from '@wiswork/pptx-render'
-import type { AddSmartArtOp, AgentToolCall, AgentToolDef, EditParagraph } from '../../shared/ipc'
+import type {
+  AddSmartArtOp,
+  AgentToolCall,
+  AgentToolDef,
+  EditParagraph,
+  SlidesAcceptanceAuthorityRequest,
+  SlidesAcceptanceAuthorityLease,
+  SlidesAcceptanceTextProofRequest,
+} from '../../shared/ipc'
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
 import { t } from '../i18n/locale'
+import {
+  textFamilyReceiptOutcome,
+  textToolTransactionId,
+  type TextFamilyExecutionResult,
+  type TextFamilyTransactionRequest,
+} from './presentation-text-transactions'
+import type { SpeakerNotesDraftPreparation } from '../notes-draft'
+import { selectionScopeSummary, type SelectionScope } from './edit-queue'
+import {
+  geometryPxToPoints,
+  geometryToolTransactionId,
+  normalizePresentationRotation,
+  type CanonicalElementOperation,
+  type GeometryFamilyTransactionRequest,
+} from './presentation-geometry-transactions'
+import {
+  backgroundToolTransactionId,
+  type BackgroundFamilyTransactionRequest,
+} from './presentation-background-transactions'
+import type { SlidesAcceptanceAuthority } from './task-acceptance'
+import {
+  canonicalAffectedSlides,
+  compileCanonicalSlidesCalls,
+  createSlidesTaskController,
+} from './task-controller'
+import type { SlidesTaskReviewAdapter } from './task-review'
+import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
+import type { PresentationCompletionReceipt } from '@wiswork/presentation-verification'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -23,9 +74,51 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Current editable design contract, retained so screenshot QC can judge intent as well as geometry. */
+  setPresentationDesignContext?(context: {
+    designMd: string
+    pages: Array<{ visual: string; acceptance: string[]; density: string }>
+  }): void
+  /** Latest user-edited DESIGN.md document, included in every agent turn. */
+  getPresentationDesignDocument?(): string | undefined
+  markPresentationPageReviewed?(slideIndex: number, passed: boolean): void
+  /** Refresh renderer refs from the current native document after an uncertain write. */
+  refreshAuthoritativeState?(signal?: AbortSignal): Promise<boolean>
+  /** Render one slide for bounded, in-memory visual inspection by the main agent. */
+  captureSlideScreenshot?(slideIndex: number): Promise<AgentImage | null>
+  reviewPresentationScreenshot?(
+    slideIndex: number,
+    screenshot: AgentImage,
+    signal?: AbortSignal,
+  ): Promise<boolean>
+  getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
+  verifyAcceptanceTextProof?(request: SlidesAcceptanceTextProofRequest): Promise<boolean>
+  /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
+  inspectAcceptanceAuthority?(
+    request: SlidesAcceptanceAuthorityRequest,
+  ): Promise<SlidesAcceptanceAuthority>
+  taskReviewAdapter?: SlidesTaskReviewAdapter
+  onTaskReviewComplete?(receipt: PresentationCompletionReceipt): void | Promise<void>
+  presentationTelemetry?(event: PresentationTelemetryEvent): void
+  onHostCorrection?(pass: number): void | Promise<void>
+  beginTaskCorrectionHistory?(): Promise<boolean>
+  finishTaskCorrectionHistory?(): Promise<string | undefined>
+  /** Immutable durable scope for the active queued run, if any. */
+  getSelectionScope?(): SelectionScope | undefined
   applySlide(slideIndex: number, updated: RenderSlide): void
   /** Replace the whole deck (after adding/removing slides) and jump to the goTo slide */
   applyDeck(slides: RenderSlide[], goTo?: number): void
+  /** Execute one canonical, durable presentation transaction for an enrolled tool family. */
+  executePresentationOperation?(
+    request:
+      | TextFamilyTransactionRequest
+      | GeometryFamilyTransactionRequest
+      | BackgroundFamilyTransactionRequest,
+    signal?: AbortSignal,
+  ): Promise<TextFamilyExecutionResult>
+  /** Mirror an already-applied notes transaction into the visible notes editor. */
+  prepareSpeakerNotesWrite?(slideIndex: number): Promise<SpeakerNotesDraftPreparation>
+  applySpeakerNotes?(slideIndex: number, text: string, expectedDraftVersion: number): void
   /** Survey: shows a card with options and waits for the user's choices, returning an answer summary. */
   askClarification?(questions: ClarifyQuestion[]): Promise<{ answers: string; cancelled?: boolean }>
   /**
@@ -68,10 +161,15 @@ export interface DeckAccess {
     error?: string
   }>
   /**
-   * Persist the current draft's Style Skill as a sidecar file (same directory and name as the draft, .styleskill.json).
+   * Persist the current draft's editable design contract next to the draft as .design.md.
    * fail-open: failure doesn't block the main path.
    */
-  saveSidecar?(data: { topic: string; styleSkill: string; createdAt: string }): Promise<void>
+  saveSidecar?(data: {
+    topic: string
+    styleSkill: string
+    designMd?: string
+    createdAt: string
+  }): Promise<void>
   /**
    * Save styleSkill into userData/style-templates/<name>.json for later reuse.
    */
@@ -113,14 +211,249 @@ export interface ClarifyQuestion {
 
 const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Help users create, edit, and verify presentations with the available local tools.
 
+${PRESENTATION_DESIGN_WORKFLOW_PROMPT}
+
 ## Workflow
+- Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. Do not run consecutive tool batches as an unexplained list; after reading tool results, narrate what they changed in the plan before starting the next batch.
+- Own the complete visual quality loop in this SAME agent run: generate/edit -> wait for applied tool results -> screenshot every created or changed slide -> inspect each native image -> repair concrete defects -> screenshot the repaired slides again. Do not end the run expecting a host post-processing reviewer or another user message to finish the work.
+- After building a deck, review ALL generated pages, not just the cover. After a focused edit, review the affected pages. Keep track of pages checked and unresolved issues. A successful screenshot call alone is not a pass; actually inspect the image. If you find obscured text, missing images, poor contrast, clipping or overlap, use the normal editing tools and confirmation flow to fix it in this run. Read fresh element IDs and geometry before editing. Do not describe a submitted proposal as applied.
+- A geometry-only fix is not your only option: use text/style/fill/image tools or a bounded slide script as appropriate, preserving the user's content and scope. Recheck after each applied repair. If tools fail, use the returned error to correct the operation rather than repeating the same failed call. Stop only when checked pages are satisfactory, the user cancels, or a concrete unresolved blocker prevents safe progress. Report that blocker and affected pages honestly; never claim full visual acceptance for unreviewed or unresolved pages.
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
-- For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
+- For visual work, use screenshot_slide before a substantial edit and again after it. Inspect the rendered PNG for clipping, overlap, hierarchy, spacing, contrast, and balance. Never claim that visual quality passed from structure alone.
+- A screenshot call is not a visual review. Inspect the native image, identify concrete issues, apply corrections, then capture and inspect each changed page again. If any required page cannot be captured, or you see truncated base64 instead of an image, explicitly report visual verification incomplete; never mark all pages passed. In Enhanced exec use exactly: const result = await tools.mcp__wiswork__wiswork_read({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); }
+- For a new presentation, use ask_clarification only when the user has not delegated the missing choices, then plan_deck. Search for relevant imagery before building. After planning, use build_deck once with a coherent theme, varied page layouts, concise hierarchy, and selected image URLs. A deck made only from repeated title-and-body pages is not complete. Use lower-level tools only for later refinement. Empty decks are valid and may be built directly.
+- Supported editing capability map:
+  - Change existing text font, size, color, emphasis, or alignment with set_element_style; for coordinated edits use execute_slide_script and setStyle.
+  - Move, resize, rotate, or align titles and other elements with set_element_transform; for coordinated edits use execute_slide_script and setBox/moveBy/resizeBy.
+  - For a multi-page request, inspect and edit each target page (one tool call per target slideIndex), then verify the affected pages. Do not infer that changing one page changes the others.
+- An edit request must not finish with inspection or advice only. Apply the requested supported edits and verify them before responding.
+- If an approved edit returns an error, treat it as a tool execution failure, not as missing confirmation. Read the fresh slide state, correct the tool arguments, and retry when safe; never tell the user to confirm a proposal that has already settled.
+- Claim a capability limitation only after the relevant tool explicitly returns unsupported or fail-closed. Do not infer limitations from a read result or from unfamiliarity with a tool.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
+- Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
 - Use web_search for current facts and image_search for real imagery. Never invent precise figures; declare figure provenance through dataSource.
 - Keep layouts readable, consistent, within canvas bounds, and free of accidental overlaps. Verify the deck outline after substantial edits.
 - Read all text attachments before using their content. Prefer user-provided material over generic filler.
 - If a requested capability is unavailable, report that limitation clearly and continue with the supported local tools when possible.`
+
+const SLIDES_CAPABILITY_CORRECTION =
+  '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
+
+const QUESTIONNAIRE_CONTINUATION_CORRECTION =
+  '[System correction] The questionnaire answers are already available in the latest tool result. Do not ask the user to choose again or stop with an explanation. Continue with plan_deck and the available Slides tools now.'
+
+const incompleteDeckCorrection = (planned: number, actual: number) =>
+  `[System correction] The confirmed plan has ${planned} pages, but the deck currently has only ${actual}. Continue building every missing page with the available Slides tools, inspect the completed deck, and only then report completion.`
+
+const DENIAL_ASSERTION =
+  /(?:无法|不能|不支持|不可用|没有(?:办法|能力)|只能|\bcannot\b|\bcan't\b|\bunable to\b|\bdoes not support\b|\bnot supported\b|\bunavailable\b|\bonly (?:can|allows?)\b)/i
+const TEXT_TARGET = /(?:字体|文字|文本|标题|重点文字|\bfont\b|\btext\b|\btitle\b)/i
+const TEXT_STYLE =
+  /(?:颜色|色彩|字号|字体|加粗|粗体|斜体|下划线|样式|格式|\bcolou?r\b|\bsize\b|\bfamily\b|\bstyle\b|\bformat\b|\bbold\b|\bitalic\b|\bunderline\b|\balign(?:ment)?\b)/i
+const GEOMETRY_TARGET =
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b)/i
+const GEOMETRY_CHANGE =
+  /(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局|\bposition\b|\bsize\b|\bgeometry\b|\balign(?:ment|ed)?\b|\brotat(?:e|ed|ion)\b|\bmov(?:e|ed|ing)\b|\bresiz(?:e|ed|ing)\b)/i
+const HOST_READ_FAILURE =
+  /(?:(?:PowerPoint|幻灯片|PPT).{0,32}(?:read failed|read error|读取失败|操作失败|未能应用)|(?:read failed|read error|读取失败).{0,32}(?:PowerPoint|幻灯片|PPT))/i
+const FAILURE_STATUS =
+  /(?:unsupported|fail(?:ed)?[- ]closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错)/i
+const STYLE_TOOL = /(?:set_element_style|(?:style|format) (?:tool|operation)|样式编辑工具)/i
+const GEOMETRY_TOOL =
+  /(?:set_element_transform|(?:transform|geometry) (?:tool|operation)|几何编辑工具)/i
+const SCRIPT_TOOL = /(?:execute_slide_script|脚本编辑工具)/i
+const REAL_UNSUPPORTED_FAMILY =
+  /(?:嵌入字体|字体打包|平滑切换|变体过渡|embedded fonts?|font packaging|morph transitions?)/i
+const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)/i
+const TARGET_CONSTRAINT =
+  /(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组)|\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)/gi
+const CONCRETE_TARGET =
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|图表|目标|对象|字体|文字|文本|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\bchart\b|\btarget\b|\bobject\b|\bfont\b|\btext\b)/gi
+const DENIAL_ANCHOR = new RegExp(DENIAL_ASSERTION.source, 'gi')
+
+const MAX_REVIEW_TEXT_CHARS = 4096
+const MAX_REVIEW_CLAUSES = 64
+const MAX_REVIEW_CLAUSE_CHARS = 512
+const PROTECTED_PERIOD = '\u0000'
+
+function protectCommonPeriods(text: string): string {
+  return text
+    .replace(/https?:\/\/[^\s。！？!?;；]+/gi, (url) =>
+      url.replaceAll('.', (match, offset: number) =>
+        offset === url.length - 1 ? match : PROTECTED_PERIOD,
+      ),
+    )
+    .replace(/\b(?:e\.g\.|i\.e\.)/gi, (abbreviation) =>
+      abbreviation.replaceAll('.', PROTECTED_PERIOD),
+    )
+    .replace(/(?<=\d)\.(?=\d)/g, PROTECTED_PERIOD)
+}
+
+function boundClause(clause: string): string {
+  if (clause.length <= MAX_REVIEW_CLAUSE_CHARS) return clause
+  const half = MAX_REVIEW_CLAUSE_CHARS / 2
+  return `${clause.slice(0, half)}${clause.slice(-half)}`
+}
+
+function boundedClauses(text: string): string[] {
+  const clauses =
+    protectCommonPeriods(text.slice(0, MAX_REVIEW_TEXT_CHARS)).match(
+      /[^.。！？!?;；\r\n]+[.。！？!?;；]?/g,
+    ) ?? []
+  const selected =
+    clauses.length <= MAX_REVIEW_CLAUSES
+      ? clauses
+      : [...clauses.slice(0, MAX_REVIEW_CLAUSES / 2), ...clauses.slice(-MAX_REVIEW_CLAUSES / 2)]
+  return selected
+    .map((clause) => boundClause(clause.trim()).replaceAll(PROTECTED_PERIOD, '.'))
+    .filter(Boolean)
+}
+
+type CapabilityFamily = 'text-style' | 'geometry'
+
+function supportedCapabilityFamilies(clause: string): CapabilityFamily[] {
+  const families: CapabilityFamily[] = []
+  if (TEXT_TARGET.test(clause) && TEXT_STYLE.test(clause)) families.push('text-style')
+  if (GEOMETRY_TARGET.test(clause) && GEOMETRY_CHANGE.test(clause)) families.push('geometry')
+  return families
+}
+
+function hasRelatedToolFailure(clause: string, family: CapabilityFamily): boolean {
+  if (!FAILURE_STATUS.test(clause)) return false
+  if (SCRIPT_TOOL.test(clause)) return true
+  return family === 'text-style' ? STYLE_TOOL.test(clause) : GEOMETRY_TOOL.test(clause)
+}
+
+type TargetKind = 'title' | 'element' | 'text-box' | 'shape' | 'image' | 'chart' | 'target' | 'text'
+
+function targetKind(token: string): TargetKind {
+  const normalized = token.toLowerCase()
+  if (/标题|title/.test(normalized)) return 'title'
+  if (/文本框|text box/.test(normalized)) return 'text-box'
+  if (/形状|shape/.test(normalized)) return 'shape'
+  if (/图片|image/.test(normalized)) return 'image'
+  if (/图表|chart/.test(normalized)) return 'chart'
+  if (/目标|对象|target|object/.test(normalized)) return 'target'
+  if (/字体|文字|文本|font|text/.test(normalized)) return 'text'
+  return 'element'
+}
+
+interface TargetMention {
+  kind: TargetKind
+  index: number
+  identity?: string
+  coreference: boolean
+}
+
+function targetMention(clause: string, match: RegExpMatchArray): TargetMention {
+  const index = match.index ?? 0
+  const before = clause.slice(Math.max(0, index - 24), index)
+  const after = clause.slice(index + match[0].length, index + match[0].length + 40)
+  const chineseOrdinal = before.match(/第([一二三四五六七八九十百\d]+)个?\s*$/)
+  const englishOrdinal = before.match(/\b(first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+$/i)
+  const explicitId = after.match(/^\s+id\s*[:=#]\s*([A-Za-z0-9_-]+)/i)
+  const shortSuffix = after.match(/^\s+([A-Z]|\d+)\b/)
+  const bareId = after.match(/^\s+([A-Za-z0-9]+(?:[-_][A-Za-z0-9_-]+))(?=\s|[,.;:!?，。；！？]|$)/)
+  const identity = explicitId?.[1]
+    ? `id:${explicitId[1].toLowerCase()}`
+    : bareId?.[1]
+      ? `id:${bareId[1].toLowerCase()}`
+      : shortSuffix?.[1]
+        ? `label:${shortSuffix[1].toLowerCase()}`
+        : chineseOrdinal?.[1]
+          ? `ordinal:${chineseOrdinal[1]}`
+          : englishOrdinal?.[1]
+            ? `ordinal:${englishOrdinal[1].toLowerCase()}`
+            : undefined
+  return {
+    kind: targetKind(match[0]),
+    index,
+    ...(identity ? { identity } : {}),
+    coreference: /(?:该|此|同一)\s*$/.test(before) || /\b(?:this|that|same)\s+$/i.test(before),
+  }
+}
+
+function targetMentions(clause: string): TargetMention[] {
+  return [...clause.matchAll(CONCRETE_TARGET)].map((match) => targetMention(clause, match))
+}
+
+function nearestTarget(clause: string, index: number): TargetMention | undefined {
+  const targets = targetMentions(clause)
+  let nearest: TargetMention | undefined
+  let distance = Number.POSITIVE_INFINITY
+  for (const target of targets) {
+    const nextDistance = Math.abs(target.index - index)
+    if (nextDistance < distance) {
+      nearest = target
+      distance = nextDistance
+    }
+  }
+  return nearest
+}
+
+function constrainedTarget(clause: string, index: number): TargetMention | undefined {
+  const targets = targetMentions(clause)
+  const immediateFollowing = targets.find((target) => {
+    return target.index >= index && /^[\s的]{0,5}$/.test(clause.slice(index, target.index))
+  })
+  if (immediateFollowing) return immediateFollowing
+  return targets.filter((target) => target.index < index).at(-1) ?? targets[0]
+}
+
+function sameTarget(constrained: TargetMention, denied: TargetMention): boolean {
+  const compatibleKind =
+    constrained.kind === denied.kind || constrained.kind === 'target' || denied.kind === 'target'
+  if (!compatibleKind) return false
+  if (constrained.identity && denied.identity) return constrained.identity === denied.identity
+  if (constrained.identity) return denied.coreference
+  if (denied.identity) return constrained.coreference
+  if (constrained.coreference || denied.coreference) return true
+  return true
+}
+
+function hasSameTargetConstraint(clause: string): boolean {
+  const deniedTargets = [...clause.matchAll(DENIAL_ANCHOR)]
+    .map((match) => nearestTarget(clause, match.index ?? 0))
+    .filter((target): target is TargetMention => Boolean(target))
+  if (deniedTargets.length === 0) return false
+  const constrainedTargets = [...clause.matchAll(TARGET_CONSTRAINT)]
+    .map((match) => constrainedTarget(clause, (match.index ?? 0) + match[0].length))
+    .filter((target): target is TargetMention => Boolean(target))
+  return constrainedTargets.some((constrained) =>
+    deniedTargets.some((denied) => sameTarget(constrained, denied)),
+  )
+}
+
+function isLocallyJustified(clause: string, family: CapabilityFamily): boolean {
+  return (
+    HOST_READ_FAILURE.test(clause) ||
+    REAL_UNSUPPORTED_FAMILY.test(clause) ||
+    hasRelatedToolFailure(clause, family) ||
+    hasSameTargetConstraint(clause) ||
+    QUALIFIED_UNCERTAINTY.test(clause)
+  )
+}
+
+/**
+ * Rejects only a narrow, tool-free false denial of an editing family that
+ * Slides already exposes. The correction is constant and cannot echo deck or
+ * response content into a later model turn.
+ */
+export function reviewSlidesFinalResponse({
+  text,
+  mutated,
+}: FinalResponseReviewContext): string | undefined {
+  if (mutated || !text.trim()) return undefined
+  for (const clause of boundedClauses(text)) {
+    if (/[?？]\s*$/.test(clause)) continue
+    if (!DENIAL_ASSERTION.test(clause)) continue
+    const families = supportedCapabilityFamilies(clause)
+    if (families.some((family) => !isLocallyJustified(clause, family))) {
+      return SLIDES_CAPABILITY_CORRECTION
+    }
+  }
+  return undefined
+}
 
 /** Paragraph schema (shared by set_element_text / add_text_box / add_shape) */
 const PARAGRAPHS_DEF = {
@@ -199,6 +532,18 @@ const ALL_TOOLS: AgentToolDef[] = [
     },
   },
   {
+    name: 'screenshot_slide',
+    description:
+      'Render one page as a PNG for visual inspection. Use before a substantial visual edit and again after applying it; do not claim visual quality without the post-edit screenshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer', description: 'Page number (0-based)' },
+      },
+      required: ['slideIndex'],
+    },
+  },
+  {
     name: 'set_element_text',
     description:
       "Replace a text element's entire content. paragraphs is the complete post-replacement paragraph array, one object per paragraph; whole-paragraph bold/italic etc. use the boolean fields on the paragraph object.",
@@ -255,7 +600,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'execute_slide_script',
     description:
-      "[Preferred tool for editing a slide's existing elements] Runs your JS edit script against one page; a single script covers: position/size/alignment/distribution/relative nudges/text/style/fill/stroke." +
+      '[Preferred tool for editing a slide] Runs your JS edit script against one page; a single script covers: add/delete/position/size/alignment/distribution/relative nudges/text/style/fill/stroke.' +
       ' At run time the script automatically receives the real geometry and text of every element on the page (els) — **no read_slide needed first**; read-write combined, compute from els inside the script.' +
       ' Geometry changes are applied atomically in one batch (undoable as a whole), the rest in script order, and a layout audit (overlap/out-of-bounds/text overflow) is returned at the end.' +
       ' Far more reliable than individual set_element_* calls — coordinate math happens at execution site, not from memory. If the audit reports problems, call this tool again immediately to fix.\n' +
@@ -269,6 +614,8 @@ const ALL_TOOLS: AgentToolDef[] = [
       '- setStyle(id, {fontSize?,color?,bold?,italic?,underline?,align?,fontFamily?}): change style without changing text, pass only fields to change\n' +
       "- setFill(id, colorOrNone): solid fill '#RRGGBB' or 'none'\n" +
       '- setStroke(id, {color?,widthPt?} | null): stroke; pass null to remove\n' +
+      '- addText(clientId, textOrParagraphs, {x,y,w,h,rotation?}): add a text box and return its transaction-local id; later primitives may use that id\n' +
+      '- delete(id): delete a top-level existing element or a text box added earlier in this script; later use of that id fails closed\n' +
       '- log(...): debug output (echoed back to you); the return value is echoed back to you (put a summary there)\n' +
       '- Supported computation: const/let, arithmetic, if/for/for...of/while, functions/arrows, JSON object/array literals, Math, regex.test, and safe array/string methods. No classes, async, modules, constructors, prototypes, or dynamic code.\n' +
       'Example 1 — three cards equal width, equal spacing:\n' +
@@ -284,7 +631,7 @@ const ALL_TOOLS: AgentToolDef[] = [
         code: {
           type: 'string',
           description:
-            'JS script body (synchronous code; may use els/canvas plus setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log; may return a summary)',
+            'JS script body (synchronous code; may use els/canvas plus addText/delete/setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log; may return a summary)',
         },
         explanation: {
           type: 'string',
@@ -447,7 +794,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'plan_deck',
     description:
-      "[When creating a whole new deck, call after researching material and images] Outputs a structured plan: the Core Hook + unified style scheme + each page's title/content brief/layout/image keywords. Think the whole deck through first, to avoid starting strong and fizzling out. The plan is echoed to the user.",
+      '[When creating a whole new deck, first call with a compact status=draft contract immediately after the brief/questionnaire; keep prototypePages, slides, assets, and deckAcceptance empty in this first call. Update that draft while researching material and images, then call with a complete status=ready contract before production] Outputs the Core Hook, an editable DESIGN.md contract, and a page director plan. Every ready page should declare its narrative purpose, one focal visual, evidence, layout, assets, and acceptance criteria. The plan is echoed to the user.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -459,7 +806,7 @@ const ALL_TOOLS: AgentToolDef[] = [
         style: {
           type: 'string',
           description:
-            'Unified design system: primary/secondary colors, font tone, content margins, card/corner style (e.g. "dark blue primary + gold accents, data-dashboard look"); every page follows it',
+            'Complete DESIGN.md body: concrete color tokens, type hierarchy, margins/grid, image treatment, density limits, layout families, and composition rules',
         },
         pages: {
           type: 'array',
@@ -476,8 +823,9 @@ const ALL_TOOLS: AgentToolDef[] = [
               },
               layout: {
                 type: 'string',
+                enum: ['cover', 'split_image', 'cards', 'timeline', 'statement'],
                 description:
-                  'Layout (e.g. three_column_cards/hero_big_number/two_column/timeline/left_text_right_image); content pages must not repeat',
+                  'Production layout passed unchanged to build_deck; vary layouts across adjacent pages',
               },
               image_queries: {
                 type: 'array',
@@ -485,13 +833,123 @@ const ALL_TOOLS: AgentToolDef[] = [
                 description:
                   "English image-search keywords for this page's image slots (one per slot; [] for no images)",
               },
+              purpose: { type: 'string', description: 'Narrative job this page performs' },
+              visual: {
+                type: 'string',
+                description: 'The single focal visual and how it proves the headline',
+              },
+              evidence: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Facts, examples, or source-backed claims supporting the headline',
+              },
+              acceptance: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Slide-specific visual and content checks',
+              },
+              density: {
+                type: 'string',
+                enum: ['low', 'medium', 'high'],
+                description: 'Intentional information density for this slide',
+              },
             },
-            required: ['title', 'brief', 'layout'],
+            required: ['title', 'brief', 'layout', 'purpose', 'visual', 'acceptance', 'density'],
           },
         },
+        prototype_pages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: { type: 'integer', minimum: 0 },
+          description:
+            'Zero-based indexes of the cover, representative content page, and most complex visual page; use every page when the deck has fewer than three',
+        },
+        contract: {
+          ...PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+          description:
+            'Preferred structured PresentationDesignContract. Must use schemaVersion 1 and status ready; legacy core_hook/style/pages/prototype_pages remain supported.',
+        },
       },
-      required: ['core_hook', 'style', 'pages'],
+      anyOf: [
+        { required: ['contract'] },
+        { required: ['core_hook', 'style', 'pages', 'prototype_pages'] },
+      ],
     },
+  },
+  {
+    name: 'build_deck',
+    description:
+      '[Preferred after plan_deck] Create a polished complete presentation in one bounded operation. Choose varied layouts, a coherent theme, and pass selected image_search URLs for visual pages. Use this instead of repeatedly creating blank pages. Available only when the current deck is blank.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        theme: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            mode: { type: 'string', enum: ['dark', 'light'] },
+            primary: { type: 'string', description: '#RRGGBB background color' },
+            accent: { type: 'string', description: '#RRGGBB accent color' },
+          },
+          required: ['mode'],
+        },
+        pages: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 12,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              layout: {
+                type: 'string',
+                enum: ['cover', 'split_image', 'cards', 'timeline', 'statement'],
+              },
+              kicker: { type: 'string', description: 'Short eyebrow label above the title' },
+              title: { type: 'string' },
+              body: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 8,
+                items: { type: 'string' },
+                description:
+                  'Content items. cards supports 1-8 items and reflows them automatically; timeline supports at most 5; cover and statement support at most 2.',
+              },
+              evidence: {
+                type: 'array',
+                maxItems: 20,
+                items: { type: 'string' },
+                description: 'Evidence items copied from the authoritative DESIGN.md.',
+              },
+              imageUrl: {
+                type: 'string',
+                description:
+                  'An HTTPS imageUrl selected from image_search. Supported on cover, statement (ending page), and split_image. Cover and statement use a right-side image panel, not a full-page background; text stays unobscured on the left.',
+              },
+              imageAlt: { type: 'string', description: 'Short accessible description' },
+            },
+            required: ['title', 'body', 'evidence'],
+          },
+        },
+        phase: { type: 'string', enum: ['prototype', 'batch'] },
+        page_indexes: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: { type: 'integer', minimum: 0 },
+          description: 'Planned zero-based pages to materialize in this reviewed batch',
+        },
+      },
+      required: ['pages', 'phase', 'page_indexes'],
+    },
+  },
+  {
+    name: 'verify_slides',
+    description:
+      'Final DESIGN.md-bound whole-deck verification. Run only after every planned page has been built and its latest screenshot review passed.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
   {
     name: 'delete_slide',
@@ -804,6 +1262,22 @@ const ALL_TOOLS: AgentToolDef[] = [
     },
   },
   {
+    name: 'set_speaker_notes',
+    description:
+      'Replace the complete speaker notes for one slide. Newlines separate paragraphs; an empty string clears the notes. This changes presenter notes only, not canvas content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer', description: 'Page number (0-based)' },
+        text: {
+          type: 'string',
+          description: 'Complete speaker notes text, at most 12000 characters',
+        },
+      },
+      required: ['slideIndex', 'text'],
+    },
+  },
+  {
     name: 'delete_element',
     description: 'Delete one element from a page.',
     inputSchema: {
@@ -835,6 +1309,18 @@ const UNSUPPORTED_CLOUD_TOOLS = new Set([
   'analyze_media',
   'regenerate_slide',
   'generate_deck',
+])
+const BLANK_DECK_PLANNING_TOOLS = new Set([
+  'get_deck_context',
+  'read_slide',
+  'screenshot_slide',
+  'web_search',
+  'image_search',
+  'ask_clarification',
+  'plan_deck',
+  'build_deck',
+  'save_style_template',
+  'list_style_templates',
 ])
 const TOOLS = ALL_TOOLS.filter((tool) => !UNSUPPORTED_CLOUD_TOOLS.has(tool.name))
 
@@ -912,18 +1398,30 @@ function nodeToParagraphs(node: ShapeRenderNode): EditParagraph[] {
  * by the set_element_style tool and execute_slide_script's setStyle dispatch.
  */
 function mergeStyleIntoParagraphs(cur: EditParagraph[], ov: SlideStylePatch): EditParagraph[] {
-  return cur.map((p) => ({
-    runs: p.runs.map((r) => ({
-      text: r.text,
-      bold: ov.bold ?? r.bold,
-      italic: ov.italic ?? r.italic,
-      underline: ov.underline ?? r.underline,
-      fontSize: typeof ov.fontSize === 'number' ? ov.fontSize : r.fontSize,
-      fontFamily: ov.fontFamily ?? r.fontFamily,
-      color: ov.color ?? r.color,
-    })),
-    align: ov.align ?? p.align,
-  }))
+  return cur.map((p) => {
+    const align = ov.align ?? p.align
+    return {
+      runs: p.runs.map((r) => {
+        const bold = ov.bold ?? r.bold
+        const italic = ov.italic ?? r.italic
+        const underline = ov.underline ?? r.underline
+        const fontSize = typeof ov.fontSize === 'number' ? ov.fontSize : r.fontSize
+        const fontFamily = ov.fontFamily ?? r.fontFamily
+        const color = ov.color ?? r.color
+        // Optional canonical fields must be absent, not own properties with undefined values.
+        return {
+          text: r.text,
+          ...(bold === undefined ? {} : { bold }),
+          ...(italic === undefined ? {} : { italic }),
+          ...(underline === undefined ? {} : { underline }),
+          ...(fontSize === undefined ? {} : { fontSize }),
+          ...(fontFamily === undefined ? {} : { fontFamily }),
+          ...(color === undefined ? {} : { color }),
+        }
+      }),
+      ...(align === undefined ? {} : { align }),
+    }
+  })
 }
 
 /** Element info shared by outline/read_slide/edit scripts (includes absolute geometry; locked = layout decoration, read-only). */
@@ -1131,27 +1629,637 @@ export function formatSlideDump(slide: RenderSlide): string {
   return `Canvas ${slide.widthPx}×${slide.heightPx}px\n${parts.join('\n---\n') || '(no elements on this page)'}${colorNote}`
 }
 
-export function createSlidesSkill(access: DeckAccess): AgentSkill {
+export function createSlidesSkill(
+  access: DeckAccess,
+  presentationFlags = {
+    planning: true,
+    verifiedCompletion: true,
+    visualReview: true,
+    autoCorrection: true,
+  },
+): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
+  const mutationTools = new Set([
+    'set_element_text',
+    'set_element_style',
+    'set_element_transform',
+    'execute_layout_script',
+    'execute_slide_script',
+    'set_element_fill',
+    'set_element_stroke',
+    'insert_web_image',
+    'crop_image',
+    'set_picture_opacity',
+    'replace_image',
+    'build_deck',
+    'delete_slide',
+    'add_slide',
+    'add_text_box',
+    'add_shape',
+    'add_chart',
+    'add_smartart',
+    'add_table',
+    'edit_table_cell',
+    'edit_table_structure',
+    'edit_table_style',
+    'edit_chart',
+    'set_slide_background',
+    'set_speaker_notes',
+    'delete_element',
+    'ungroup_element',
+  ])
+  const scopedTools = new Set([
+    'screenshot_slide',
+    'set_element_text',
+    'set_element_style',
+    'set_element_transform',
+    'execute_layout_script',
+    'execute_slide_script',
+    'set_element_fill',
+    'set_element_stroke',
+    'add_text_box',
+    'set_slide_background',
+    'set_speaker_notes',
+    'delete_element',
+  ])
+  const enrolledTargets = new Map<string, Map<string, string>>()
+  const controller =
+    access.taskReviewAdapter && presentationFlags.verifiedCompletion
+      ? createSlidesTaskController({
+          enroll: async (calls, currentContract, signal) => {
+            signal?.throwIfAborted()
+            const canonical = new Set([
+              'set_element_style',
+              'set_element_transform',
+              'set_element_fill',
+              'set_element_stroke',
+              'set_slide_background',
+            ])
+            if (!calls.length || calls.some(({ name }) => !canonical.has(name)))
+              return { kind: 'bypass' }
+            if (!access.getAcceptanceAuthorityLease || !access.inspectAcceptanceAuthority)
+              return { kind: 'bypass' }
+            const lease = await access.getAcceptanceAuthorityLease()
+            const affectedSlides = canonicalAffectedSlides(calls)
+            // Bad model-generated coordinates are not missing user intent. Let the
+            // transactional tool return its precise error so the model can repair it.
+            if (!affectedSlides) return { kind: 'bypass' }
+            const sourceTargets = [
+              ...new Map(
+                calls.flatMap((call) => {
+                  if (typeof call.input.sourceId !== 'string') return []
+                  const target = {
+                    slide: Number(call.input.slideIndex) + 1,
+                    sourceId: call.input.sourceId,
+                  }
+                  return [[`${target.slide}:${target.sourceId}`, target] as const]
+                }),
+              ).values(),
+            ]
+            const raw = (await access.inspectAcceptanceAuthority({
+              affectedSlides,
+              referenceSlides: [],
+              expectedDocumentToken: lease.documentToken,
+              expectedSessionToken: lease.sessionToken,
+              expectedRevision: lease.revision,
+              leaseToken: lease.leaseToken,
+              sourceTargets,
+            })) as SlidesAcceptanceAuthority & { sourceTargetTokens?: Record<string, string> }
+            const sourceTargetTokens = raw.sourceTargetTokens ?? {}
+            const { sourceTargetTokens: _resolved, ...authorityValue } = raw
+            const authority = authorityValue as SlidesAcceptanceAuthority
+            const taskId = `task-${crypto.randomUUID().replaceAll('-', '')}`
+            enrolledTargets.set(taskId, new Map(Object.entries(sourceTargetTokens)))
+            while (enrolledTargets.size > 8) {
+              const oldest = enrolledTargets.keys().next().value as string | undefined
+              if (!oldest) break
+              enrolledTargets.delete(oldest)
+            }
+            const compiled = compileCanonicalSlidesCalls({
+              calls,
+              authority,
+              sourceTargetTokens,
+              taskId,
+            })
+            if (!('kind' in compiled) && !presentationFlags.planning)
+              return { ...compiled, plan: undefined }
+            return compiled
+          },
+          reviewAdapter: {
+            ...access.taskReviewAdapter,
+            correct: async (intents, authority, signal) => {
+              if (
+                !access.executePresentationOperation ||
+                !access.taskReviewAdapter?.isCurrent(authority)
+              )
+                throw new Error('stale_authority')
+              if (intents.length !== 1) throw new Error('unsupported_correction')
+              const intent = intents[0]!
+              if (intent.roleOrTarget.kind !== 'target') throw new Error('unsupported_correction')
+              const targetToken = intent.roleOrTarget.targetToken
+              const resolved = [...(enrolledTargets.get(authority.taskId ?? '') ?? [])].find(
+                ([, token]) => token === targetToken,
+              )
+              if (!resolved) throw new Error('unsupported_correction')
+              const [scope] = resolved
+              const separator = scope.indexOf(':')
+              const slideIndex = Number(scope.slice(0, separator)) - 1
+              const sourceId = scope.slice(separator + 1)
+              const transactionId = `slides-correction-${crypto.randomUUID().replaceAll('-', '')}`
+              const request: GeometryFamilyTransactionRequest =
+                intent.property === 'fill_color'
+                  ? {
+                      transactionId,
+                      slideIndex,
+                      operations: [
+                        {
+                          kind: 'set_fill',
+                          sourceId,
+                          fill: { kind: 'solid', color: String(intent.value) },
+                        },
+                      ],
+                    }
+                  : (() => {
+                      // Geometry needs the complete authoritative box and text style needs the
+                      // complete paragraph structure; acceptance facts intentionally omit both.
+                      throw new Error('unsupported_correction')
+                    })()
+              const opened = await access.beginTaskCorrectionHistory?.()
+              let execution: TextFamilyExecutionResult
+              let correctionRollbackId: string | undefined
+              try {
+                execution = await access.executePresentationOperation(request, signal)
+              } finally {
+                if (opened) correctionRollbackId = await access.finishTaskCorrectionHistory?.()
+              }
+              if (
+                execution.receipt.status !== 'applied' &&
+                execution.receipt.status !== 'unchanged'
+              )
+                throw new Error('correction_not_applied')
+              if (
+                execution.receipt.status === 'applied' &&
+                (execution.receipt.mutatedTargets?.length !== 1 ||
+                  execution.receipt.mutatedTargets[0] !== targetToken)
+              )
+                throw new Error('correction_scope_mismatch')
+              return {
+                mutationReceiptId: execution.receipt.transactionId,
+                applied: execution.receipt.status === 'applied',
+                ...(correctionRollbackId ? { rollbackId: correctionRollbackId } : {}),
+                correctedCheckIds: [intent.checkId],
+              }
+            },
+          },
+          onHostCorrection: access.onHostCorrection,
+          afterTaskReview: access.onTaskReviewComplete,
+          flags: presentationFlags,
+          telemetry: access.presentationTelemetry,
+        })
+      : undefined
+  const executionAccess: DeckAccess = controller
+    ? {
+        ...access,
+        executePresentationOperation: async (request, signal) => {
+          if (!access.executePresentationOperation)
+            throw new Error('Canonical presentation transactions are unavailable')
+          const result = await access.executePresentationOperation(request, signal)
+          controller.recordMutation({
+            transactionId: result.receipt.transactionId,
+            status: result.receipt.status,
+            mutatedTargetTokens:
+              result.receipt.status === 'applied' ? [...(result.receipt.mutatedTargets ?? [])] : [],
+          })
+          return result
+        },
+      }
+    : access
+  access.markPresentationPageReviewed = (slideIndex, passed) => {
+    if (passed) state.pendingReviewIndexes?.delete(slideIndex)
+  }
   return {
     id: 'slides',
+    repeatFinalResponseCorrection: true,
     systemPrompt: AGENT_SYSTEM_PROMPT,
-    tools: TOOLS,
-    buildContext: () =>
-      `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
-    executeTool: (call, signal) => executeTool(access, call, state, signal),
+    get tools() {
+      return access.getSelectionScope?.()
+        ? TOOLS.filter((tool) => scopedTools.has(tool.name))
+        : TOOLS
+    },
+    buildContext: () => {
+      const selectionScope = access.getSelectionScope?.()
+      const slides = access.getSlides()
+      state.blankDeckPlanRequired =
+        !selectionScope &&
+        slides.length === 1 &&
+        slides[0]!.nodes.length === 0 &&
+        !state.plannedPages
+      const designDocument =
+        access.getPresentationDesignDocument?.()?.trim() ??
+        (state.designContract ? renderPresentationDesignContract(state.designContract) : undefined)
+      if (designDocument) {
+        const restored = extractPresentationDesignContract(designDocument)
+        if (
+          restored &&
+          (state.designContract?.revision !== restored.revision ||
+            state.designContract.status !== restored.status)
+        ) {
+          const restoredPlan =
+            restored.status === 'draft' && restored.slides.length === 0
+              ? {
+                  core_hook: restored.narrative.coreHook,
+                  style: restored.visualSystem.style,
+                  pages: [],
+                  prototype_pages: [],
+                }
+              : parsePresentationDesignPlan(contractAsLegacyPlan(restored))
+          state.designContract = restored
+          state.plannedPages = restoredPlan.pages
+          state.plannedPageCount = restoredPlan.pages.length
+          state.prototypePages = restoredPlan.prototype_pages
+          state.productionTheme = undefined
+          if (restored.status === 'producing' || restored.status === 'verified') {
+            const progress = restoreDesignCheckpoint(designDocument)
+            state.builtPageIndexes = new Set(
+              restored.status === 'verified'
+                ? restoredPlan.pages.map((_, index) => index)
+                : (progress?.built ?? []),
+            )
+            state.pendingReviewIndexes = new Set(
+              restored.status === 'producing' ? (progress?.pending ?? []) : [],
+            )
+          } else {
+            state.builtPageIndexes = new Set()
+            state.pendingReviewIndexes = new Set()
+            state.awaitingBuildDeck = restoredPlan.pages.length >= 2
+          }
+          state.blankDeckPlanRequired = false
+          access.setPresentationDesignContext?.({
+            designMd: renderPresentationDesignContract(restored),
+            pages: restored.slides.map((slide) => ({
+              visual: slide.visualRoute,
+              acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+              density: slide.density,
+            })),
+          })
+        } else if (!restored) {
+          state.designContract = undefined
+          state.plannedPages = undefined
+          state.plannedPageCount = undefined
+          state.prototypePages = undefined
+          state.builtPageIndexes = undefined
+          state.pendingReviewIndexes = undefined
+          state.designReplanRequired = true
+        }
+      }
+      const documentContext = selectionScope
+        ? `<selection scope>\n${selectionScopeSummary(selectionScope)}. This scope is immutable and enforced by the host.\n</selection scope>`
+        : `<deck outline>\n${buildDeckOutline(slides, access.getCurrent(), access.getSelectedIds())}\n</deck outline>`
+      return designDocument
+        ? `${documentContext}\n<design contract>\n${designDocument}\n</design contract>`
+        : documentContext
+    },
+    reviewFinalResponse: (context) => {
+      if (state.questionnaireAnsweredPendingPlan) return QUESTIONNAIRE_CONTINUATION_CORRECTION
+      if (state.pendingReviewIndexes?.size)
+        return `Continue the visual quality loop: screenshot and inspect planned pages ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')} before producing another batch or reporting completion.`
+      const planned = state.plannedPageCount
+      const actual = access.getSlides().length
+      if (planned !== undefined && (state.builtPageIndexes?.size ?? 0) < planned)
+        return `Continue production: only ${state.builtPageIndexes?.size ?? 0} of ${planned} planned pages have been materialized.`
+      if (planned !== undefined && actual < planned)
+        return incompleteDeckCorrection(planned, actual)
+      if (state.designContract?.status === 'draft')
+        return 'Continue planning in this turn: finish research, update DESIGN.md to a complete ready contract with plan_deck, then immediately materialize and verify the prototype slides. Do not stop after describing the next stage.'
+      return reviewSlidesFinalResponse(context)
+    },
+    ...(controller ? { presentation: { ...controller.hooks, batchScoped: true } } : {}),
+    executeTool: async (call, signal) => {
+      const isMutation = mutationTools.has(call.name)
+      if (isMutation) state.activeMutations = (state.activeMutations ?? 0) + 1
+      try {
+        const result = await executeTool(executionAccess, call, state, signal)
+        if (isMutation && result.mutated) {
+          state.deckMutationRevision = (state.deckMutationRevision ?? 0) + 1
+          const slideIndex = Number(call.input.slideIndex)
+          if (Number.isSafeInteger(slideIndex) && slideIndex >= 0)
+            state.pendingReviewIndexes?.add(slideIndex)
+          else if (call.name === 'build_deck' && Array.isArray(call.input.page_indexes))
+            for (const index of call.input.page_indexes)
+              if (Number.isSafeInteger(index) && Number(index) >= 0)
+                state.pendingReviewIndexes?.add(Number(index))
+              else
+                for (const index of state.builtPageIndexes ?? [])
+                  state.pendingReviewIndexes?.add(index)
+        }
+        return result
+      } finally {
+        if (isMutation) state.activeMutations = Math.max(0, (state.activeMutations ?? 1) - 1)
+      }
+    },
   }
 }
 
 interface SkillState {
+  deckMutationRevision?: number
+  activeMutations?: number
+  fallbackInvocationIds?: WeakMap<AgentToolCall, string>
   /** A web_search ran in this conversation — unlocks dataSource:'search' in the figure gate */
   webSearched?: boolean
+  /** Exact HTTPS image URLs returned by image_search in this skill session. */
+  searchedImageUrls?: Set<string>
   /** Most recently available Style Skill (used by save_style_template) */
   lastStyleSkill?: string
   /** Topic associated with the most recently available Style Skill */
   lastTopic?: string
+  /** Total page count from the latest accepted plan; terminal responses must not silently stop early. */
+  plannedPageCount?: number
+  /** A new-deck plan must materialize its first batch before low-level refinement. */
+  awaitingBuildDeck?: boolean
+  /** An agent turn opened on a blank deck must establish its design plan before writing. */
+  blankDeckPlanRequired?: boolean
+  /** A native image write may have happened without a matching renderer update. */
+  authoritativeRefreshRequired?: boolean
+  /** Questionnaire completion cannot terminate the run before the model plans the deck. */
+  questionnaireAnsweredPendingPlan?: boolean
+  /** Reuse a submitted questionnaire result if the remote carrier retries delivery. */
+  lastQuestionnaireAnswers?: string
+  /** Coalesce concurrent carrier retries onto the one questionnaire already shown. */
+  activeQuestionnaire?: Promise<{ answers: string; cancelled?: boolean }>
+  plannedPages?: ReturnType<typeof parsePresentationDesignPlan>['pages']
+  prototypePages?: number[]
+  builtPageIndexes?: Set<number>
+  pendingReviewIndexes?: Set<number>
+  productionTheme?: string
+  /** Active structured production contract. Legacy plans intentionally leave this undefined. */
+  designContract?: PresentationDesignContract
+  /** Visible DESIGN.md changed without a matching structured snapshot. */
+  designReplanRequired?: boolean
+}
+
+function contractAsLegacyPlan(contract: PresentationDesignContract) {
+  return {
+    core_hook: contract.narrative.coreHook,
+    style: contract.visualSystem.style,
+    pages: contract.slides.map((slide) => ({
+      title: slide.title,
+      brief: slide.claim,
+      layout: slide.layoutFamily,
+      purpose: slide.role,
+      visual: slide.visualRoute,
+      evidence: slide.evidence,
+      acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+      density: slide.density,
+      image_queries: slide.assetIds.flatMap((id) => {
+        const asset = contract.assets.find((candidate) => candidate.id === id)
+        return asset?.intent ? [asset.intent] : []
+      }),
+    })),
+    prototype_pages: contract.prototypePages.map((number) => number - 1),
+  }
+}
+
+function contractFromLegacyPlan(
+  plan: ReturnType<typeof parsePresentationDesignPlan>,
+): PresentationDesignContract {
+  const assets = plan.pages.flatMap((page, pageIndex) =>
+    page.image_queries.map((query, queryIndex) => ({
+      id: `slide-${pageIndex + 1}-asset-${queryIndex + 1}`,
+      slideNumbers: [pageIndex + 1],
+      type: 'image',
+      role: 'substantive',
+      intent: query,
+      source: '',
+      crop: 'layout-dependent',
+      placement: page.layout,
+      status: 'needed' as const,
+    })),
+  )
+  return parsePresentationDesignContract({
+    schemaVersion: 1,
+    revision: 1,
+    status: 'draft',
+    prototypePages: plan.prototype_pages.map((index) => index + 1),
+    brief: {
+      topic: plan.core_hook,
+      audience: 'Audience inferred from the user request',
+      occasion: 'Presentation requested by the user',
+      desiredOutcome: plan.core_hook,
+      language: 'Match the user request',
+      pageCount: plan.pages.length,
+      aspectRatio: '16:9',
+      sourceConstraints: [],
+    },
+    narrative: {
+      coreHook: plan.core_hook,
+      opening: plan.pages[0]!.brief,
+      development: plan.pages.map((page) => page.brief).join(' → '),
+      tension: plan.core_hook,
+      resolution: plan.pages.at(-1)!.brief,
+      closingAction: plan.pages.at(-1)!.purpose,
+    },
+    visualSystem: {
+      style: plan.style,
+      colors: { primary: 'Defined by the ready style contract' },
+      typography: { hierarchy: 'Title, supporting text, and evidence' },
+      safeMargin: 'Keep all content inside the slide safe area',
+      grid: 'Consistent aligned layout grid',
+      imageTreatment: 'Use only validated imagery or the declared native fallback',
+      chartTreatment: 'Native editable charts with direct labels',
+      antiPatterns: ['No repetitive filler cards or placeholder content'],
+    },
+    slides: plan.pages.map((page, index) => ({
+      number: index + 1,
+      title: page.title,
+      role: page.purpose,
+      claim: page.brief,
+      content: [page.brief],
+      evidence: page.evidence,
+      visualRoute: page.visual,
+      layoutFamily: page.layout,
+      focalVisual: page.visual,
+      density: page.density,
+      assetIds: assets.filter((asset) => asset.slideNumbers.includes(index + 1)).map((a) => a.id),
+      acceptance: page.acceptance.map((criterion, acceptanceIndex) => ({
+        id: `A${index + 1}.${acceptanceIndex + 1}`,
+        criterion,
+      })),
+    })),
+    assets,
+    deckAcceptance: [{ id: 'D1', criterion: 'Every slide satisfies its page acceptance rules' }],
+  })
+}
+
+const normalizeContractBinding = (value: string): string =>
+  value
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const contractBindingListMatches = (value: unknown, expected: string[]): boolean =>
+  Array.isArray(value) &&
+  value.length === expected.length &&
+  value.every(
+    (item, index) =>
+      typeof item === 'string' &&
+      normalizeContractBinding(item) === normalizeContractBinding(expected[index]!),
+  )
+
+function unverifiedRemoteAssetUrls(
+  contract: PresentationDesignContract,
+  searchedImageUrls: Set<string> | undefined,
+): string[] {
+  return contract.assets.flatMap((asset) =>
+    asset.type === 'image' &&
+    asset.localReference &&
+    /^https:\/\//.test(asset.localReference) &&
+    !searchedImageUrls?.has(asset.localReference)
+      ? [asset.localReference]
+      : [],
+  )
+}
+
+function contractSlideImageUrls(
+  contract: PresentationDesignContract,
+  slideIndex: number,
+): string[] {
+  const assetIds = new Set(contract.slides[slideIndex]?.assetIds ?? [])
+  return [
+    ...new Set(
+      contract.assets
+        .filter(
+          (asset) =>
+            assetIds.has(asset.id) &&
+            asset.type === 'image' &&
+            (asset.status === 'ready' || asset.status === 'fallback_ready'),
+        )
+        .map((asset) => asset.localReference)
+        .filter((value): value is string => Boolean(value && /^https:\/\//.test(value))),
+    ),
+  ]
+}
+
+function contractReference(contract: PresentationDesignContract, slideIndex?: number): string {
+  if (slideIndex === undefined) return `DESIGN.md · Revision ${contract.revision}`
+  const slide = contract.slides[slideIndex]
+  const ids = slide?.acceptance.map((rule) => rule.id).join(', ') || 'no acceptance ids'
+  return `DESIGN.md · Revision ${contract.revision} · Slide ${slideIndex + 1} · ${ids}`
+}
+
+async function persistContract(
+  access: DeckAccess,
+  state: SkillState,
+  status: 'producing' | 'verified',
+): Promise<void> {
+  const current = state.designContract
+  if (!current) return
+  const contract =
+    current.status === status ? current : transitionPresentationDesignContract(current, status)
+  state.designContract = contract
+  const progress = encodeURIComponent(
+    JSON.stringify({
+      built: [...(state.builtPageIndexes ?? [])],
+      pending: [...(state.pendingReviewIndexes ?? [])],
+    }),
+  )
+  const designMd = `${renderPresentationDesignContract(contract)}\n\n<!-- WISWORK_PRESENTATION_PROGRESS:${progress} -->`
+  await access.saveSidecar?.({
+    topic: contract.brief.topic || contract.narrative.coreHook,
+    styleSkill: contract.visualSystem.style,
+    designMd,
+    createdAt: new Date().toISOString(),
+  })
+  access.setPresentationDesignContext?.({
+    designMd,
+    pages: contract.slides.map((slide) => ({
+      visual: slide.visualRoute,
+      acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+      density: slide.density,
+    })),
+  })
+}
+
+async function persistDraftResearch(
+  access: DeckAccess,
+  state: SkillState,
+  query: string,
+  images: Array<{ imageUrl: string; title?: string }>,
+): Promise<boolean> {
+  const current = state.designContract
+  if (!current || current.status !== 'draft' || images.length === 0) return false
+  const chinese = /(?:中文|Chinese|zh(?:-|_|$))/i.test(current.brief.language)
+  const known = new Set(current.assets.flatMap((asset) => [asset.source, asset.localReference]))
+  const additions = images
+    .filter((image) => /^https:\/\//.test(image.imageUrl) && !known.has(image.imageUrl))
+    .slice(0, 6)
+    .map((image, index) => ({
+      id: `search-${current.assets.length + index + 1}`,
+      slideNumbers: [],
+      type: 'image',
+      role: chinese ? '候选素材' : 'candidate',
+      intent: `${chinese ? '图片检索' : 'Image search'}：${query}${image.title ? ` — ${image.title}` : ''}`,
+      source: image.imageUrl,
+      crop: '',
+      placement: chinese
+        ? '尚未分配；制作前绑定到具体页面'
+        : 'Unassigned candidate; bind to a slide before production',
+      status: 'validated' as const,
+      localReference: image.imageUrl,
+    }))
+  const note = chinese
+    ? `图片检索“${query}”：获得 ${images.length} 个结果，新增记录 ${additions.length} 个候选素材。`
+    : `Image search “${query}”: ${images.length} result${images.length === 1 ? '' : 's'} collected; ${additions.length} new candidate${additions.length === 1 ? '' : 's'} recorded.`
+  const contract: PresentationDesignContract = {
+    ...current,
+    discovery: {
+      questionnaire: current.discovery?.questionnaire ?? [],
+      openQuestions: current.discovery?.openQuestions ?? [],
+      researchNotes: [...(current.discovery?.researchNotes ?? []), note].slice(-100),
+    },
+    assets: [...current.assets, ...additions],
+  }
+  state.designContract = contract
+  const designMd = renderPresentationDesignContract(contract)
+  await access.saveSidecar?.({
+    topic: contract.brief.topic || contract.narrative.coreHook,
+    styleSkill: contract.visualSystem.style,
+    designMd,
+    createdAt: new Date().toISOString(),
+  })
+  access.setPresentationDesignContext?.({
+    designMd,
+    pages: contract.slides.map((slide) => ({
+      visual: slide.visualRoute,
+      acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+      density: slide.density,
+    })),
+  })
+  return true
+}
+
+function restoreDesignCheckpoint(designDocument: string): {
+  built: number[]
+  pending: number[]
+} | null {
+  const match = designDocument.match(/<!-- WISWORK_PRESENTATION_PROGRESS:([^\s]+) -->/)
+  if (!match?.[1] || match[1].length > 10_000) return null
+  try {
+    const value = JSON.parse(decodeURIComponent(match[1])) as {
+      built?: unknown
+      pending?: unknown
+    }
+    const indexes = (items: unknown) =>
+      Array.isArray(items) ? items.filter((item): item is number => Number.isSafeInteger(item)) : []
+    return { built: indexes(value.built), pending: indexes(value.pending) }
+  } catch {
+    return null
+  }
 }
 
 const fail = (summary: string, output: string) => ({
@@ -1160,6 +2268,52 @@ const fail = (summary: string, output: string) => ({
   mutated: false,
   summary,
 })
+
+const SCREENSHOT_CAPTURE_TIMEOUT_MS = 10_000
+
+async function captureScreenshotBounded(
+  capture: () => Promise<AgentImage | null>,
+  signal?: AbortSignal,
+): Promise<AgentImage | null> {
+  signal?.throwIfAborted()
+  return await new Promise<AgentImage | null>((resolve, reject) => {
+    let settled = false
+    const finish = (action: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      action()
+    }
+    const onAbort = () =>
+      finish(() => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')))
+    const timer = setTimeout(() => finish(() => resolve(null)), SCREENSHOT_CAPTURE_TIMEOUT_MS)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    Promise.resolve()
+      .then(capture)
+      .then(
+        (image) => finish(() => resolve(image)),
+        () => finish(() => resolve(null)),
+      )
+    if (signal?.aborted) onAbort()
+  })
+}
+
+async function refreshAuthoritativeState(
+  access: DeckAccess,
+  state: SkillState | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let refreshed = false
+  try {
+    refreshed = (await access.refreshAuthoritativeState?.(signal)) === true
+  } catch {
+    // Keep the refresh requirement: cached reads cannot safely drive a retry.
+  }
+  signal?.throwIfAborted()
+  if (refreshed && state) state.authoritativeRefreshRequired = false
+  return refreshed
+}
 
 // ── Figure-provenance gate ────────────────────────────────────
 // Prompt rules ("search before writing data") did not stop invented numbers being
@@ -1229,6 +2383,40 @@ async function executeTool(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted()
+  const activeScope = access.getSelectionScope?.()
+  if (activeScope) {
+    const allowed = new Set([
+      'screenshot_slide',
+      'set_element_text',
+      'set_element_style',
+      'set_element_transform',
+      'execute_layout_script',
+      'execute_slide_script',
+      'set_element_fill',
+      'set_element_stroke',
+      'add_text_box',
+      'set_slide_background',
+      'set_speaker_notes',
+      'delete_element',
+    ])
+    if (!allowed.has(call.name))
+      return fail(call.name, 'selection_scope_conflict: tool is unavailable for a scoped edit')
+  }
+  if (!('invocationId' in call) || !call.invocationId) {
+    state ??= {}
+    state.fallbackInvocationIds ??= new WeakMap()
+    let invocationId = state.fallbackInvocationIds.get(call)
+    if (!invocationId) {
+      invocationId = globalThis.crypto.randomUUID()
+      state.fallbackInvocationIds.set(call, invocationId)
+    }
+    Object.defineProperty(call, 'invocationId', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: invocationId,
+    })
+  }
   const unguardedAccess = access
   access = {
     ...unguardedAccess,
@@ -1241,6 +2429,18 @@ async function executeTool(
       unguardedAccess.applyDeck(updatedSlides, goTo)
     },
   }
+  if (
+    state?.authoritativeRefreshRequired &&
+    !(await refreshAuthoritativeState(access, state, signal))
+  ) {
+    return {
+      ...fail(
+        call.name,
+        'authoritative_reload_required: Native document state could not be refreshed. Do not use cached page data or retry edits until the document is reloaded.',
+      ),
+      stopToolBatch: true,
+    }
+  }
   const slides = access.getSlides()
   if (UNSUPPORTED_CLOUD_TOOLS.has(call.name)) {
     return fail(
@@ -1248,6 +2448,64 @@ async function executeTool(
       'unsupported_feature: This feature is not available in the current WisWork development version.',
     )
   }
+  if (
+    state?.blankDeckPlanRequired &&
+    !state.plannedPages &&
+    !BLANK_DECK_PLANNING_TOOLS.has(call.name)
+  )
+    return fail(
+      call.name,
+      'A blank presentation must start with plan_deck before any slide write. Establish the DESIGN.md and prototype pages, then use build_deck.',
+    )
+  if (
+    state?.designReplanRequired &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'screenshot_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The visible DESIGN.md changed. Normalize it into a ready structured contract with plan_deck before further production.',
+    )
+  if (
+    state?.designContract?.status === 'draft' &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'screenshot_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The revised DESIGN.md is a draft. Submit a ready structured contract with plan_deck before further production.',
+    )
+  if (
+    state?.awaitingBuildDeck &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'screenshot_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+      'build_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The new-deck plan is ready. Materialize the planned prototype pages with build_deck before using lower-level refinement tools.',
+    )
   switch (call.name) {
     case 'get_deck_context':
       return {
@@ -1268,6 +2526,88 @@ async function executeTool(
       }
     }
 
+    case 'screenshot_slide': {
+      const idx = Number(call.input.slideIndex)
+      if (!Number.isSafeInteger(idx) || !slides[idx])
+        return fail('Capture slide screenshot', `slideIndex out of range (0-${slides.length - 1})`)
+      if (!access.captureSlideScreenshot)
+        return fail('Capture slide screenshot', 'visual_capture_unavailable')
+      if ((state?.activeMutations ?? 0) > 0)
+        return fail('Capture slide screenshot', 'visual_capture_stale: retry after editing settles')
+      const captureRevision = state?.deckMutationRevision ?? 0
+      const image = await captureScreenshotBounded(
+        () => access.captureSlideScreenshot!(idx),
+        signal,
+      )
+      signal?.throwIfAborted()
+      if (
+        (state?.activeMutations ?? 0) > 0 ||
+        (state?.deckMutationRevision ?? 0) !== captureRevision
+      )
+        return fail('Capture slide screenshot', 'visual_capture_stale: retry after editing settles')
+      if (!image)
+        return fail(
+          'Capture slide screenshot',
+          'visual_capture_unavailable: slide rendering did not complete; retry screenshot_slide',
+        )
+      if (state?.pendingReviewIndexes?.has(idx)) {
+        if (!access.reviewPresentationScreenshot)
+          return fail('Review slide screenshot', 'visual_review_unavailable')
+        const passed = await access.reviewPresentationScreenshot(idx, image, signal)
+        signal?.throwIfAborted()
+        if (
+          (state.activeMutations ?? 0) > 0 ||
+          (state.deckMutationRevision ?? 0) !== captureRevision
+        )
+          return fail('Review slide screenshot', 'visual_review_stale: retry after editing settles')
+        if (!passed)
+          return fail(
+            'Review slide screenshot',
+            `${state.designContract ? `${contractReference(state.designContract, idx)} · ` : ''}visual_review_failed: repair this page with low-level editing tools and screenshot it again before continuing; production batches remain blocked`,
+          )
+        state.pendingReviewIndexes.delete(idx)
+      }
+      return {
+        output: `${state?.designContract ? `${contractReference(state.designContract, idx)} · ` : ''}Rendered slide ${idx + 1}. Inspect the attached PNG for clipping, overlap, hierarchy, spacing, contrast, and visual balance.`,
+        mutated: false,
+        summary: `Captured slide ${idx + 1}`,
+        modelContent: [{ type: 'image' as const, image }],
+      }
+    }
+
+    case 'verify_slides': {
+      if (!state?.designContract)
+        return fail(
+          'Verify slides',
+          'verify_slides requires an active structured DESIGN.md contract',
+        )
+      if (state.pendingReviewIndexes?.size)
+        return fail(
+          'Verify slides',
+          `Screenshot review is incomplete for slides ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')}`,
+        )
+      if (state.builtPageIndexes?.size !== state.plannedPageCount)
+        return fail(
+          'Verify slides',
+          `Only ${state.builtPageIndexes?.size ?? 0} of ${state.plannedPageCount ?? 0} planned slides have been built`,
+        )
+      const failures = slides.flatMap((slide, index) =>
+        auditSlideLayout(slide).map((issue) => `Slide ${index + 1}: ${issue}`),
+      )
+      if (failures.length)
+        return fail(
+          'Verify slides',
+          `${contractReference(state.designContract)} · final verification failed:\n${failures.join('\n')}`,
+        )
+      await persistContract(access, state, 'verified')
+      const designMd = renderPresentationDesignContract(state.designContract)
+      return {
+        output: `${contractReference(state.designContract)} · verified\nAll planned slides were built, screenshot-reviewed, and passed deterministic geometry verification.\n\n${designMd}`,
+        mutated: false,
+        summary: `DESIGN.md · Revision ${state.designContract.revision} · verified`,
+      }
+    }
+
     case 'set_element_text': {
       const idx = Number(call.input.slideIndex)
       const sourceId = String(call.input.sourceId ?? '')
@@ -1279,27 +2619,44 @@ async function executeTool(
       const target = resolveEditTarget(slide, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailEditText'), terr!)
-      const updated = await window.slidesApi.editText({
-        slideIndex: idx,
-        sourceId,
-        paragraphs,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(
-          t('aiFailEditText'),
-          `Element ${sourceId} (${target.node.type}) does not support text editing` +
-            (target.node.type === 'table'
-              ? '; use edit_table_cell for tables'
-              : target.node.type === 'chart'
-                ? '; use edit_chart for charts'
-                : ''),
-        )
-      access.applySlide(idx, updated)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailEditText'), 'Canonical presentation transactions are unavailable')
+      const transactionId = await textToolTransactionId(call)
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId,
+          slideIndex: idx,
+          sourceId,
+          operation: { kind: 'set_text', paragraphs },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The text change was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumEditText', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output:
+            outcome.detail === 'write_state_uncertain'
+              ? 'The text change may be partially applied. Inspect the slide before retrying.'
+              : `The text change was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailEditText'),
+        }
+      }
       return {
-        output: `Replaced the text of element ${sourceId} on page ${idx + 1} (${paragraphs.length} paragraphs).`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Replaced the text of element ${sourceId} on page ${idx + 1} (${paragraphs.length} paragraphs).`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested text.`,
+        mutated: outcome.mutated,
         summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }
@@ -1320,19 +2677,42 @@ async function executeTool(
       if (!cur.length) return fail(t('aiFailStyle'), 'This element has no text to format')
       const ov = call.input as SlideStylePatch
       const paragraphs = mergeStyleIntoParagraphs(cur, ov)
-      const updated = await window.slidesApi.editText({
-        slideIndex: idx,
-        sourceId,
-        paragraphs,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(t('aiFailStyle'), `Element ${sourceId} does not support format editing`)
-      access.applySlide(idx, updated)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailStyle'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await textToolTransactionId(call),
+          slideIndex: idx,
+          sourceId,
+          operation: { kind: 'set_text', paragraphs },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The formatting change was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumStyle', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The formatting change may be partially applied. Inspect the slide before retrying.'
+            : `The formatting change was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailStyle'),
+        }
+      }
       return {
-        output: `Updated the formatting of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Updated the formatting of element ${sourceId} on page ${idx + 1}.`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested formatting.`,
+        mutated: outcome.mutated,
         summary: t('aiSumStyle', { n: idx + 1 }),
       }
     }
@@ -1356,20 +2736,57 @@ async function executeTool(
         h?: number
         rotationDeg?: number
       }
-      const updated = await window.slidesApi.editTransform({
-        slideIndex: idx,
-        sourceId,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-        xPx: (typeof inp.x === 'number' ? inp.x : origin.x + b.x) - origin.x,
-        yPx: (typeof inp.y === 'number' ? inp.y : origin.y + b.y) - origin.y,
-        wPx: typeof inp.w === 'number' ? inp.w : b.w,
-        hPx: typeof inp.h === 'number' ? inp.h : b.h,
-        rotationDeg: typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
-        fitWidthPx: access.fitWidthPx,
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailTransform'), 'Transform failed')
-      access.applySlide(idx, updated)
+      const x = typeof inp.x === 'number' ? inp.x : origin.x + b.x
+      const y = typeof inp.y === 'number' ? inp.y : origin.y + b.y
+      const w = typeof inp.w === 'number' ? inp.w : b.w
+      const h = typeof inp.h === 'number' ? inp.h : b.h
+      const rotation = normalizePresentationRotation(
+        typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
+      )
+      if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0)
+        return fail(t('aiFailTransform'), 'Transform geometry is invalid')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailTransform'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              sourceId,
+              geometry: {
+                x: geometryPxToPoints(x, slide.scale),
+                y: geometryPxToPoints(y, slide.scale),
+                width: geometryPxToPoints(w, slide.scale),
+                height: geometryPxToPoints(h, slide.scale),
+                rotation,
+              },
+            },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The transform was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumTransform', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The transform may be partially applied. Inspect the slide before retrying.'
+            : `The transform was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailTransform'),
+        }
+      }
+      const updated = access.getSlides()[idx] ?? slide
       const afterTarget = resolveEditTarget(updated, sourceId)
       const after = afterTarget && !('nested' in afterTarget) ? afterTarget : null
       const nb = after
@@ -1387,8 +2804,10 @@ async function executeTool(
         ? `\n⚠️ The layout audit found ${issues.length} issue(s) on this page:\n${issues.map((s) => `- ${s}`).join('\n')}\nFor multi-element layout adjustments switch to execute_slide_script (it reads every element's real geometry and applies atomically).`
         : ''
       return {
-        output: `Adjusted the position/size of element ${sourceId} on page ${idx + 1}. ${boxStr}${auditStr}`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Adjusted the position/size of element ${sourceId} on page ${idx + 1}. ${boxStr}${auditStr}`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested geometry.${auditStr}`,
+        mutated: outcome.mutated,
         summary: t('aiSumTransform', { n: idx + 1 }),
       }
     }
@@ -1413,9 +2832,279 @@ async function executeTool(
       const returnedStr = r.returned !== undefined ? `\nScript returned: ${r.returned}` : ''
       if (r.ops.length === 0 && r.edits.length === 0) {
         return {
-          output: `Script finished but called no edit primitives (setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
+          output: `Script finished but called no edit primitives (addText/delete/setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
           mutated: false,
           summary: t('aiSumScriptNoop', { n: idx + 1 }),
+        }
+      }
+      // Every primitive exposed by this DSL now belongs to an enrolled canonical family. Compile
+      // the complete script before preparing any target so an unsupported paint/text target fails
+      // closed without a proposal, mutation, or partially executed prefix.
+      if (r.ops.length > 0 || r.edits.length > 0) {
+        if (!access.executePresentationOperation)
+          return fail(t('aiFailScript'), 'Canonical presentation transactions are unavailable')
+        const operations: GeometryFamilyTransactionRequest['operations'][number][] = r.ops.map(
+          (op) => {
+            const target = resolveEditTarget(slide, op.id)
+            if (!target || 'nested' in target)
+              throw new TypeError(`Geometry target ${op.id} is no longer editable`)
+            return {
+              sourceId: op.id,
+              geometry: {
+                x: geometryPxToPoints(op.x, slide.scale),
+                y: geometryPxToPoints(op.y, slide.scale),
+                width: geometryPxToPoints(op.w, slide.scale),
+                height: geometryPxToPoints(op.h, slide.scale),
+                rotation: normalizePresentationRotation(op.rotation),
+              },
+            }
+          },
+        )
+        const paragraphState = new Map<string, EditParagraph[]>()
+        const canonicalParagraphs = (paragraphs: readonly EditParagraph[]) => {
+          const paragraphKeys = new Set(['runs', 'align'])
+          const runKeys = new Set([
+            'text',
+            'bold',
+            'italic',
+            'underline',
+            'fontSize',
+            'fontFamily',
+            'color',
+          ])
+          if (
+            paragraphs.some(
+              (paragraph) =>
+                Object.keys(paragraph).some((key) => !paragraphKeys.has(key)) ||
+                paragraph.align === 'justify' ||
+                paragraph.runs.some((run) => Object.keys(run).some((key) => !runKeys.has(key))),
+            )
+          )
+            return null
+          return paragraphs.map((paragraph) => ({
+            runs: paragraph.runs.map((run) => ({ ...run })),
+            ...(paragraph.align === 'left' ||
+            paragraph.align === 'center' ||
+            paragraph.align === 'right'
+              ? { align: paragraph.align }
+              : {}),
+          }))
+        }
+        const generatedIds = new Set<string>()
+        for (const edit of r.edits) {
+          if (edit.kind === 'add_text') {
+            const paragraphs = canonicalParagraphs(edit.paragraphs)
+            if (!paragraphs)
+              return fail(t('aiFailScript'), `addText("${edit.id}"): unsupported rich formatting`)
+            const text = paragraphs
+              .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+              .join('\n')
+            operations.push({
+              kind: 'add_text_box',
+              clientId: edit.id,
+              text,
+              geometry: {
+                x: geometryPxToPoints(edit.geometry.x, slide.scale),
+                y: geometryPxToPoints(edit.geometry.y, slide.scale),
+                width: geometryPxToPoints(edit.geometry.w, slide.scale),
+                height: geometryPxToPoints(edit.geometry.h, slide.scale),
+                rotation: normalizePresentationRotation(edit.geometry.rotation),
+              },
+            })
+            generatedIds.add(edit.id)
+            paragraphState.set(edit.id, edit.paragraphs)
+            operations.push({
+              createdByClientId: edit.id,
+              kind: 'set_text',
+              paragraphs,
+            })
+            continue
+          }
+          if (edit.kind === 'delete') {
+            if (generatedIds.has(edit.id)) {
+              operations.push({ createdByClientId: edit.id, kind: 'delete_element' })
+              continue
+            }
+            const target = resolveEditTarget(slide, edit.id)
+            if (!target || 'nested' in target || target.groupId)
+              return fail(t('aiFailScript'), `Delete target ${edit.id} is no longer editable`)
+            operations.push({ sourceId: edit.id, kind: 'delete_element' })
+            continue
+          }
+          const generated = generatedIds.has(edit.id)
+          const target = generated ? undefined : resolveEditTarget(slide, edit.id)
+          const existingTarget = target && !('nested' in target) ? target : undefined
+          if (!generated && !existingTarget)
+            return fail(t('aiFailScript'), `Target ${edit.id} is no longer editable`)
+          const targetReference = generated ? { createdByClientId: edit.id } : { sourceId: edit.id }
+          if (edit.kind === 'fill') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
+              return fail(
+                t('aiFailScript'),
+                `setFill("${edit.id}"): element does not support a durable fill`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_fill',
+              fill:
+                edit.fill === 'none'
+                  ? { kind: 'none' }
+                  : { kind: 'solid', color: edit.fill.toUpperCase() },
+            })
+          } else if (edit.kind === 'stroke') {
+            if (
+              !generated &&
+              !(
+                existingTarget!.node.type === 'text' ||
+                existingTarget!.node.type === 'shape' ||
+                existingTarget!.node.type === 'picture'
+              )
+            )
+              return fail(
+                t('aiFailScript'),
+                `setStroke("${edit.id}"): element does not support a durable stroke`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_stroke',
+              stroke: edit.stroke && {
+                color: edit.stroke.color.toUpperCase(),
+                width: edit.stroke.widthPt,
+              },
+            })
+          } else if (edit.kind === 'text') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
+              return fail(
+                t('aiFailScript'),
+                `setText("${edit.id}"): element does not support text editing`,
+              )
+            paragraphState.set(
+              edit.id,
+              edit.paragraphs.map((paragraph) => ({
+                ...paragraph,
+                runs: paragraph.runs.map((run) => ({ ...run })),
+              })),
+            )
+            const paragraphs = canonicalParagraphs(paragraphState.get(edit.id)!)
+            if (!paragraphs)
+              return fail(
+                t('aiFailScript'),
+                `setText("${edit.id}"): rich paragraph formatting is not supported by atomic scripts`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_text',
+              paragraphs,
+            })
+          } else if (edit.kind === 'style') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
+              return fail(t('aiFailScript'), `setStyle("${edit.id}"): text element not found`)
+            const current =
+              paragraphState.get(edit.id) ??
+              nodeToParagraphs(existingTarget!.node as ShapeRenderNode)
+            if (!current.length)
+              return fail(
+                t('aiFailScript'),
+                `setStyle("${edit.id}"): this element has no text to format`,
+              )
+            const paragraphs = mergeStyleIntoParagraphs(current, edit.style)
+            paragraphState.set(edit.id, paragraphs)
+            const canonical = canonicalParagraphs(paragraphs)
+            if (!canonical)
+              return fail(
+                t('aiFailScript'),
+                `setStyle("${edit.id}"): existing rich paragraph formatting cannot be preserved atomically`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_text',
+              paragraphs: canonical,
+            })
+          } else {
+            return fail(t('aiFailScript'), 'Unsupported script operation')
+          }
+        }
+        const execution = await access.executePresentationOperation(
+          {
+            transactionId: await geometryToolTransactionId(call),
+            slideIndex: idx,
+            operations,
+          },
+          signal,
+        )
+        const outcome = textFamilyReceiptOutcome(execution.receipt)
+        if (execution.authoritativeState === 'reload_required') {
+          return {
+            output:
+              'The layout changes were applied, but authoritative state could not be refreshed. Reloading is required before more edits.',
+            mutated: true,
+            stopToolBatch: true,
+            summary: t('aiSumScript', { n: idx + 1 }),
+          }
+        }
+        if (!outcome.ok) {
+          return {
+            output: outcome.mutated
+              ? 'The layout changes may be partially applied. Inspect the slide before retrying.'
+              : `The layout changes were not applied (${outcome.detail ?? 'write_not_applied'}).`,
+            isError: true,
+            mutated: outcome.mutated,
+            summary: t('aiFailScript'),
+          }
+        }
+        const refreshed = access.getSlides()[idx] ?? slide
+        const audit = formatAudit(auditSlideLayout(refreshed))
+        const counts = {
+          add: r.edits.filter((edit) => edit.kind === 'add_text').length,
+          delete: r.edits.filter((edit) => edit.kind === 'delete').length,
+          text: r.edits.filter((edit) => edit.kind === 'text').length,
+          style: r.edits.filter((edit) => edit.kind === 'style').length,
+          fill: r.edits.filter((edit) => edit.kind === 'fill').length,
+          stroke: r.edits.filter((edit) => edit.kind === 'stroke').length,
+        }
+        const parts: string[] = []
+        if (counts.add) parts.push(`add ${counts.add} text box(es)`)
+        if (counts.delete) parts.push(`delete ${counts.delete} element(s)`)
+        if (r.ops.length) parts.push(`layout ${r.ops.length} element(s)`)
+        if (counts.text) parts.push(`text ${counts.text} item(s)`)
+        if (counts.style) parts.push(`style ${counts.style} item(s)`)
+        if (counts.fill) parts.push(`fill ${counts.fill} item(s)`)
+        if (counts.stroke) parts.push(`stroke ${counts.stroke} item(s)`)
+        const createdTargetSummary =
+          execution.receipt.status === 'applied' && execution.receipt.createdTargets?.length
+            ? r.edits
+                .filter((edit) => edit.kind === 'add_text')
+                .map((edit) => {
+                  const operationIndex = operations.findIndex(
+                    (operation) =>
+                      operation.kind === 'add_text_box' && operation.clientId === edit.id,
+                  )
+                  const target =
+                    execution.receipt.status === 'applied'
+                      ? execution.receipt.createdTargets?.find(
+                          (created) => created.clientId === `op-${operationIndex + 1}`,
+                        )
+                      : undefined
+                  return target ? `${edit.id}=${target.elementId}` : null
+                })
+                .filter((value): value is string => value !== null)
+                .join(', ')
+            : ''
+        return {
+          output: outcome.mutated
+            ? `Script applied: ${parts.join(', ')}.${createdTargetSummary ? ` Created targets: ${createdTargetSummary}.` : ''}${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
+            : `Script already matched the requested state.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`,
+          mutated: outcome.mutated,
+          summary: t('aiSumScript', { n: idx + 1 }),
         }
       }
       // ── Dispatch: geometry applied atomically once via batchEditTransform, the rest serially in script order,
@@ -1532,7 +3221,7 @@ async function executeTool(
               failures.push(`setFill("${e.id}"): element does not support fill`)
               continue
             }
-          } else {
+          } else if (e.kind === 'stroke') {
             updated = await window.slidesApi.editStroke({
               slideIndex: idx,
               sourceId: e.id,
@@ -1544,7 +3233,7 @@ async function executeTool(
               failures.push(`setStroke("${e.id}"): element does not support stroke`)
               continue
             }
-          }
+          } else continue
           current = updated
           access.applySlide(idx, updated)
           counts[e.kind] += 1
@@ -1584,18 +3273,48 @@ async function executeTool(
       const target = resolveEditTarget(slides[idx]!, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailFill'), terr!)
-      const updated = await window.slidesApi.editFill({
-        slideIndex: idx,
-        sourceId,
-        fill: String(call.input.fill),
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailFill'), `Element ${sourceId} does not support fill`)
-      access.applySlide(idx, updated)
+      if (!(target.node.type === 'text' || target.node.type === 'shape'))
+        return fail(t('aiFailFill'), `Element ${sourceId} does not support a durable fill`)
+      const rawFill = String(call.input.fill)
+      const fill =
+        rawFill === 'none'
+          ? ({ kind: 'none' } as const)
+          : /^#?[0-9a-fA-F]{6}$/.test(rawFill)
+            ? ({ kind: 'solid', color: `#${rawFill.replace(/^#/, '').toUpperCase()}` } as const)
+            : null
+      if (!fill) return fail(t('aiFailFill'), 'fill must be #RRGGBB or none')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailFill'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [{ sourceId, kind: 'set_fill', fill }],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required')
+        return {
+          output: 'The fill was applied, but reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumFill', { n: idx + 1 }),
+        }
+      if (!outcome.ok)
+        return {
+          output: outcome.mutated
+            ? 'The fill change may be partially applied. Inspect the slide before retrying.'
+            : `The fill was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailFill'),
+        }
       return {
-        output: `Set the fill of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Set the fill of element ${sourceId} on page ${idx + 1}.`
+          : `Element ${sourceId} already had the requested fill.`,
+        mutated: outcome.mutated,
         summary: t('aiSumFill', { n: idx + 1 }),
       }
     }
@@ -1612,18 +3331,55 @@ async function executeTool(
       const target = resolveEditTarget(slides[idx]!, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailStroke'), terr!)
-      const updated = await window.slidesApi.editStroke({
-        slideIndex: idx,
-        sourceId,
-        stroke,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailStroke'), `Element ${sourceId} does not support stroke`)
-      access.applySlide(idx, updated)
+      if (!(
+        target.node.type === 'text' ||
+        target.node.type === 'shape' ||
+        target.node.type === 'picture'
+      ))
+        return fail(t('aiFailStroke'), `Element ${sourceId} does not support a durable stroke`)
+      if (
+        stroke &&
+        (!/^#[0-9a-fA-F]{6}$/.test(stroke.color) ||
+          !Number.isFinite(stroke.widthPt) ||
+          stroke.widthPt < 0)
+      )
+        return fail(t('aiFailStroke'), 'stroke color/width is invalid')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailStroke'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              sourceId,
+              kind: 'set_stroke',
+              stroke: stroke && { color: stroke.color.toUpperCase(), width: stroke.widthPt },
+            },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required')
+        return {
+          output: 'The stroke was applied, but reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumStroke', { n: idx + 1 }),
+        }
+      if (!outcome.ok)
+        return {
+          output: outcome.mutated
+            ? 'The stroke change may be partially applied. Inspect the slide before retrying.'
+            : `The stroke was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailStroke'),
+        }
       return {
         output: `${remove ? 'Removed' : 'Set'} the stroke of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        mutated: outcome.mutated,
         summary: t('aiSumStroke', { n: idx + 1 }),
       }
     }
@@ -1661,6 +3417,17 @@ async function executeTool(
       if (!query) return fail(t('aiFailImageSearch'), 'query must not be empty')
       const r = await window.slidesApi.imageSearch(query, Number(call.input.maxResults) || 8)
       signal?.throwIfAborted()
+      if (r.method === 'error')
+        return fail(t('aiFailImageSearch'), `image_search_${r.error ?? 'upstream'}_error`)
+      if (state) {
+        state.searchedImageUrls ??= new Set()
+        for (const image of r.images) {
+          if (/^https:\/\//.test(image.imageUrl)) state.searchedImageUrls.add(image.imageUrl)
+        }
+      }
+      const designUpdated = state
+        ? await persistDraftResearch(access, state, query, r.images)
+        : false
       // output for the LLM: keep the existing format (the LLM needs to read URLs into image_queries; format unchanged)
       const lines = r.images.map(
         (im, i) =>
@@ -1672,9 +3439,9 @@ async function executeTool(
         items: r.images.map((im) => ({ url: im.imageUrl, title: im.title || undefined })),
       }
       return {
-        output: lines.join('\n') || '(no images)',
+        output: `${lines.join('\n') || '(no images)'}${designUpdated ? '\n\nDESIGN.md draft updated with this search and its candidate assets.' : ''}`,
         mutated: false,
-        summary: t('aiSumImageSearch', { query, count: r.images.length }),
+        summary: `${t('aiSumImageSearch', { query, count: r.images.length })}${designUpdated ? ' · DESIGN.md updated' : ''}`,
         display,
       }
     }
@@ -1800,6 +3567,13 @@ async function executeTool(
     }
 
     case 'ask_clarification': {
+      if (state?.questionnaireAnsweredPendingPlan && state.lastQuestionnaireAnswers) {
+        return {
+          output: `User questionnaire answers (already submitted; reused after transport retry):\n${state.lastQuestionnaireAnswers}\nContinue with plan_deck now. Do not ask the questionnaire again.`,
+          mutated: false,
+          summary: t('aiSumClarifyDone'),
+        }
+      }
       if (!access.askClarification)
         return fail(
           t('aiFailClarify'),
@@ -1822,8 +3596,16 @@ async function executeTool(
           t('aiFailClarify'),
           'questions must be non-empty and every question needs options',
         )
-      const r = await access.askClarification(questions)
+      const questionnaire = state?.activeQuestionnaire ?? access.askClarification(questions)
+      if (state) state.activeQuestionnaire = questionnaire
+      let r: { answers: string; cancelled?: boolean }
+      try {
+        r = await questionnaire
+      } finally {
+        if (state?.activeQuestionnaire === questionnaire) state.activeQuestionnaire = undefined
+      }
       signal?.throwIfAborted()
+      if (state) state.questionnaireAnsweredPendingPlan = true
       if (r.cancelled) {
         return {
           output:
@@ -1832,33 +3614,745 @@ async function executeTool(
           summary: t('aiSumClarifySkipped'),
         }
       }
+      if (state) state.lastQuestionnaireAnswers = r.answers
       return {
-        output: `User questionnaire answers:\n${r.answers}\nDecide the Core Hook and style accordingly, then build the slides with the available local tools.`,
+        output: `User questionnaire answers:\n${r.answers}\nUse these answers now: continue with plan_deck, complete the DESIGN.md contract and required asset research, then produce and verify the slides. Do not ask the questionnaire again.`,
         mutated: false,
         summary: t('aiSumClarifyDone'),
       }
     }
 
     case 'plan_deck': {
-      const coreHook = String(call.input.core_hook ?? '').trim()
-      const style = String(call.input.style ?? '').trim()
-      const pages = Array.isArray(call.input.pages) ? call.input.pages : []
-      if (!coreHook || !style || pages.length === 0) {
-        return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
+      let plan: ReturnType<typeof parsePresentationDesignPlan>
+      let contract: PresentationDesignContract | undefined
+      try {
+        if (call.input.contract !== undefined) {
+          contract = parsePresentationDesignContract(call.input.contract)
+          if (!['draft', 'ready'].includes(contract.status))
+            return fail(
+              t('aiFailPlan'),
+              'plan_deck only accepts draft or ready DESIGN.md contracts',
+            )
+          if (contract.status === 'ready') {
+            const unverifiedUrls = unverifiedRemoteAssetUrls(contract, state?.searchedImageUrls)
+            if (unverifiedUrls.length)
+              return fail(
+                t('aiFailPlan'),
+                'DESIGN.md remote assets must come from image_search in this session before they can be ready',
+              )
+            const readiness = validatePresentationDesignReadiness(contract)
+            if (!readiness.ready)
+              return fail(
+                t('aiFailPlan'),
+                `DESIGN.md readiness check failed: ${formatPresentationDesignReadinessFailure(contract, readiness.issues)}`,
+              )
+          }
+          plan =
+            contract.status === 'draft' && contract.slides.length === 0
+              ? {
+                  core_hook: contract.narrative.coreHook,
+                  style: contract.visualSystem.style,
+                  pages: [],
+                  prototype_pages: [],
+                }
+              : parsePresentationDesignPlan(contractAsLegacyPlan(contract))
+        } else {
+          plan = parsePresentationDesignPlan(call.input)
+          contract = contractFromLegacyPlan(plan)
+        }
+      } catch {
+        return fail(
+          t('aiFailPlan'),
+          'plan_deck requires a complete DESIGN.md, page director plan, and prototype_pages',
+        )
       }
+      const { core_hook: coreHook, style, pages } = plan
+      if (state) {
+        state.questionnaireAnsweredPendingPlan = false
+        state.lastQuestionnaireAnswers = undefined
+        state.plannedPageCount = pages.length
+        state.awaitingBuildDeck = contract.status === 'ready' && pages.length >= 2
+        state.lastStyleSkill = style
+        state.lastTopic = coreHook
+        state.plannedPages = pages
+        state.prototypePages = plan.prototype_pages
+        state.builtPageIndexes = new Set()
+        state.pendingReviewIndexes = new Set()
+        state.productionTheme = undefined
+        state.designContract = contract
+        state.designReplanRequired = false
+      }
+      const designMd = renderPresentationDesignContract(contract)
+      await access.saveSidecar?.({
+        topic: coreHook,
+        styleSkill: style,
+        designMd,
+        createdAt: new Date().toISOString(),
+      })
+      access.setPresentationDesignContext?.({
+        designMd,
+        pages: pages.map(({ visual, acceptance, density }) => ({ visual, acceptance, density })),
+      })
+      signal?.throwIfAborted()
       // Planning summary echoed back to the user
-      const lines = pages.map((p: Record<string, unknown>, i: number) => {
+      const lines = pages.map((p, i) => {
         const q =
           Array.isArray(p.image_queries) && p.image_queries.length
             ? ` [images: ${p.image_queries.length}]`
             : ''
-        return `Page ${i + 1} [${String(p.layout ?? '')}] ${String(p.title ?? '')} — ${String(p.brief ?? '').slice(0, 40)}${q}`
+        const visual = p.visual ? ` | focal: ${String(p.visual).slice(0, 50)}` : ''
+        return `Page ${i + 1} [${String(p.layout ?? '')}] ${String(p.title ?? '')} — ${String(p.brief ?? '').slice(0, 40)}${visual}${q}`
       })
       const summary = t('aiSumPlan', { count: pages.length, hook: coreHook })
+      if (contract.status === 'draft')
+        return {
+          output: `${contractReference(contract)} · draft\n\n${designMd}\n\n# Deck Plan\n${lines.join('\n')}\n\nNEXT REQUIRED ACTION: run image_search and validate the required assets, then submit the completed ready contract with plan_deck. Production remains blocked.`,
+          mutated: false,
+          summary,
+        }
       return {
-        output: `Plan confirmed:\nCore Hook: ${coreHook}\nStyle: ${style}\n${lines.join('\n')}\nNow follow this plan and build all ${pages.length} pages with the available local slide and element tools. Use the latest deck outline and each tool result to track actual completion.`,
+        output: `${contractReference(contract)} · ready\n\n${designMd}\n\n# Deck Plan\n${lines.join('\n')}\n\nNEXT REQUIRED ACTION: materialize prototype slides ${contract.prototypePages.join(', ')}. Every build and screenshot result will cite this revision, slide, and acceptance IDs.`,
         mutated: false,
         summary,
+      }
+    }
+
+    case 'build_deck': {
+      const rawPages = call.input.pages
+      if (!Array.isArray(rawPages) || rawPages.length < 2 || rawPages.length > 12)
+        return fail(t('aiFailPlan'), 'build_deck requires 2-12 pages')
+      const phase = call.input.phase
+      const rawPageIndexes = call.input.page_indexes
+      if (
+        !['prototype', 'batch'].includes(String(phase)) ||
+        !Array.isArray(rawPageIndexes) ||
+        rawPageIndexes.length < 1 ||
+        rawPageIndexes.length > 3 ||
+        new Set(rawPageIndexes).size !== rawPageIndexes.length ||
+        rawPageIndexes.some(
+          (index) =>
+            !Number.isSafeInteger(index) ||
+            (index as number) < 0 ||
+            (index as number) >= rawPages.length,
+        )
+      )
+        return fail(
+          t('aiFailPlan'),
+          'build_deck requires phase and 1-3 unique planned page_indexes',
+        )
+      const pageIndexes = rawPageIndexes as number[]
+      const plannedPages = state?.plannedPages
+      if (!state || !plannedPages || plannedPages.length !== rawPages.length)
+        return fail(t('aiFailPlan'), 'build_deck pages must match the active plan_deck plan')
+      if (
+        rawPages.some((raw, index) => {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true
+          const page = raw as Record<string, unknown>
+          return (
+            typeof page.title !== 'string' ||
+            typeof page.layout !== 'string' ||
+            normalizeContractBinding(page.title) !==
+              normalizeContractBinding(plannedPages[index]!.title) ||
+            normalizeContractBinding(page.layout) !==
+              normalizeContractBinding(plannedPages[index]!.layout)
+          )
+        })
+      )
+        return fail(
+          t('aiFailPlan'),
+          'build_deck title/layout values must match the active page plan',
+        )
+      if (
+        !state.designContract ||
+        rawPages.some((raw, index) => {
+          const page = raw as Record<string, unknown>
+          const slide = state.designContract!.slides[index]!
+          return (
+            !contractBindingListMatches(page.body, slide.content) ||
+            !contractBindingListMatches(page.evidence, slide.evidence)
+          )
+        })
+      )
+        return fail(
+          t('aiFailPlan'),
+          'build_deck body/evidence values must match the authoritative DESIGN.md contract',
+        )
+      if (
+        rawPages.some((raw, index) => {
+          const page = raw as Record<string, unknown>
+          const candidate = typeof page.imageUrl === 'string' ? page.imageUrl.trim() : ''
+          const actual = candidate || undefined
+          const allowed = contractSlideImageUrls(state.designContract!, index)
+          return allowed.length ? !actual || !allowed.includes(actual) : actual !== undefined
+        })
+      )
+        return fail(
+          t('aiFailPlan'),
+          'Each build_deck imageUrl must exactly match a ready asset referenced by that slide contract.assetIds',
+        )
+      if (state.pendingReviewIndexes?.size)
+        return fail(
+          t('aiFailPlan'),
+          `Screenshot and inspect pages ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')} before producing another batch`,
+        )
+      const remaining = rawPages.length - (state.builtPageIndexes?.size ?? 0)
+      if (phase === 'batch' && pageIndexes.length < 2 && remaining > 1)
+        return fail(
+          t('aiFailPlan'),
+          'Production batches must contain 2-3 pages unless only one remains',
+        )
+      const productionTheme = JSON.stringify(call.input.theme ?? null)
+      if (state.productionTheme !== undefined && state.productionTheme !== productionTheme)
+        return fail(t('aiFailPlan'), 'Every production batch must use the same planned theme')
+      if (
+        phase === 'prototype' &&
+        (state.builtPageIndexes?.size ||
+          pageIndexes.some((index, position) => index !== state.prototypePages?.[position]))
+      )
+        return fail(
+          t('aiFailPlan'),
+          'The first build_deck call must materialize the planned prototype_pages',
+        )
+      if (
+        phase === 'batch' &&
+        !state?.prototypePages?.every((index) => state.builtPageIndexes?.has(index))
+      )
+        return fail(
+          t('aiFailPlan'),
+          'Complete and review the prototype pages before production batches',
+        )
+      if (pageIndexes.some((index) => state?.builtPageIndexes?.has(index)))
+        return fail(
+          t('aiFailPlan'),
+          'A production batch cannot rewrite an already materialized planned page',
+        )
+      if (!state?.builtPageIndexes?.size && (slides.length !== 1 || slides[0]!.nodes.length > 0))
+        return fail(t('aiFailPlan'), 'build_deck is only available for a blank presentation')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
+      type DeckLayout = 'cover' | 'split_image' | 'cards' | 'timeline' | 'statement'
+      const layouts = new Set<DeckLayout>([
+        'cover',
+        'split_image',
+        'cards',
+        'timeline',
+        'statement',
+      ])
+      const rawTheme = call.input.theme
+      const designedInput =
+        rawTheme !== undefined ||
+        rawPages.some(
+          (page) =>
+            page &&
+            typeof page === 'object' &&
+            !Array.isArray(page) &&
+            ('layout' in page || 'imageUrl' in page || 'kicker' in page),
+        )
+      const pages: Array<{
+        title: string
+        body: string[]
+        layout?: DeckLayout
+        kicker?: string
+        imageUrl?: string
+        imageAlt?: string
+      }> = []
+      for (const rawPage of rawPages) {
+        if (!rawPage || typeof rawPage !== 'object' || Array.isArray(rawPage))
+          return fail(t('aiFailPlan'), 'Each page requires title and body')
+        const title = plannedPages[pages.length]!.title
+        const contractSlide = state.designContract.slides[pages.length]!
+        const body = [...contractSlide.content, ...contractSlide.evidence]
+        if (
+          typeof title !== 'string' ||
+          title.trim().length < 1 ||
+          title.length > 160 ||
+          !Array.isArray(body) ||
+          body.length < 1 ||
+          body.length > 8 ||
+          body.some((item) => typeof item !== 'string' || item.length < 1 || item.length > 500)
+        )
+          return fail(t('aiFailPlan'), 'Page title or body is invalid')
+        const record = rawPage as Record<string, unknown>
+        const layout = plannedPages[pages.length]!.layout
+        if (designedInput && layout === undefined)
+          return fail(t('aiFailPlan'), 'Every designed page requires an explicit layout')
+        if (
+          layout !== undefined &&
+          (!layouts.has(layout as DeckLayout) || typeof layout !== 'string')
+        )
+          return fail(t('aiFailPlan'), 'Unsupported page layout')
+        const kicker = record.kicker
+        if (kicker !== undefined && (typeof kicker !== 'string' || kicker.length > 80))
+          return fail(t('aiFailPlan'), 'Page kicker is invalid')
+        const imageUrl =
+          typeof record.imageUrl === 'string' && record.imageUrl.trim()
+            ? record.imageUrl.trim()
+            : undefined
+        const imageAlt =
+          typeof record.imageAlt === 'string' && record.imageAlt.trim()
+            ? record.imageAlt.trim()
+            : undefined
+        if (
+          imageUrl !== undefined &&
+          (typeof imageUrl !== 'string' ||
+            !/^https:\/\//.test(imageUrl) ||
+            imageUrl.length > 2_048 ||
+            typeof imageAlt !== 'string' ||
+            imageAlt.length > 160)
+        )
+          return fail(t('aiFailPlan'), 'Every image requires an HTTPS imageUrl and imageAlt')
+        if (typeof imageUrl === 'string' && !state?.searchedImageUrls?.has(imageUrl))
+          return fail(t('aiFailPlan'), 'imageUrl must come from image_search in this session')
+        if (
+          typeof imageUrl === 'string' &&
+          layout !== undefined &&
+          layout !== 'cover' &&
+          layout !== 'statement' &&
+          layout !== 'split_image'
+        )
+          return fail(
+            t('aiFailPlan'),
+            `Page ${pages.length + 1} uses layout ${layout} with imageUrl. Images are supported by cover, statement and split_image layouts. No pages were written. Change this page to split_image (or remove imageUrl and imageAlt to keep its layout), then retry build_deck with all pages.`,
+          )
+        if (
+          (layout === 'timeline' && body.length > 5) ||
+          ((layout === 'cover' || layout === 'statement') && body.length > 2)
+        )
+          return fail(t('aiFailPlan'), `Too many body items for ${layout} layout`)
+        pages.push({
+          title: title.trim(),
+          body: body.map((item) => (item as string).trim()),
+          ...(layout ? { layout: layout as DeckLayout } : {}),
+          ...(typeof kicker === 'string' && kicker.trim() ? { kicker: kicker.trim() } : {}),
+          ...(typeof imageUrl === 'string' ? { imageUrl, imageAlt: imageAlt as string } : {}),
+        })
+      }
+      const themeRecord =
+        rawTheme && typeof rawTheme === 'object' && !Array.isArray(rawTheme)
+          ? (rawTheme as Record<string, unknown>)
+          : undefined
+      const isHex = (value: unknown): value is string =>
+        typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
+      if (
+        themeRecord &&
+        (Object.keys(themeRecord).some((key) => !['mode', 'primary', 'accent'].includes(key)) ||
+          !['dark', 'light'].includes(String(themeRecord.mode)) ||
+          (themeRecord.primary !== undefined && !isHex(themeRecord.primary)) ||
+          (themeRecord.accent !== undefined && !isHex(themeRecord.accent)))
+      )
+        return fail(t('aiFailPlan'), 'Deck theme is invalid')
+      const designed = Boolean(themeRecord || pages.some((page) => page.layout || page.imageUrl))
+      const dark = themeRecord?.mode !== 'light'
+      const luminance = (hex: string) => {
+        const rgb = [1, 3, 5].map(
+          (offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255,
+        )
+        return rgb.reduce(
+          (sum, component, index) => sum + component * [0.2126, 0.7152, 0.0722][index]!,
+          0,
+        )
+      }
+      if (
+        isHex(themeRecord?.primary) &&
+        ((dark && luminance(themeRecord.primary) > 0.42) ||
+          (!dark && luminance(themeRecord.primary) < 0.58))
+      )
+        return fail(
+          t('aiFailPlan'),
+          'Theme primary color does not provide readable contrast for its mode',
+        )
+      state.productionTheme ??= productionTheme
+      const palette = {
+        background: isHex(themeRecord?.primary)
+          ? themeRecord.primary.toUpperCase()
+          : dark
+            ? '#0B1020'
+            : '#F5F7FB',
+        foreground: dark ? '#F7F9FC' : '#142033',
+        muted: dark ? '#A9B4C7' : '#52647A',
+        panel: dark ? '#172036' : '#FFFFFF',
+        accent: isHex(themeRecord?.accent)
+          ? themeRecord.accent.toUpperCase()
+          : dark
+            ? '#66E3FF'
+            : '#2367E8',
+      }
+      let deckMutated = false
+      // React applies applyDeck asynchronously. Keep the tool's authoritative
+      // working copy from each native addSlide result instead of rereading a
+      // render-owned ref that may still describe the preceding deck.
+      let workingSlides = slides
+      while (workingSlides.length < pages.length) {
+        const created = await window.slidesApi.addSlide({
+          sourceIndex: workingSlides.length - 1,
+          clearText: true,
+          fitWidthPx: access.fitWidthPx,
+        })
+        signal?.throwIfAborted()
+        if (!created) {
+          if (deckMutated && state) state.awaitingBuildDeck = false
+          return deckMutated
+            ? {
+                output:
+                  'The deck was partially created before page creation failed. Inspect or undo before retrying.',
+                isError: true,
+                mutated: true,
+                stopToolBatch: true,
+                summary: t('aiFailNewSlide'),
+              }
+            : fail(t('aiFailNewSlide'), 'Creation failed')
+        }
+        workingSlides = created.slides
+        access.applyDeck(created.slides, created.index)
+        deckMutated = true
+        if (state) await persistContract(access, state, 'producing')
+      }
+      for (const slideIndex of pageIndexes) {
+        const page = pages[slideIndex]!
+        const slide = workingSlides[slideIndex]!
+        const scale = slide.scale || access.fitWidthPx / slide.widthPx
+        const titleId = `deck-title-${slideIndex}`
+        const bodyId = `deck-body-${slideIndex}`
+        const operations: CanonicalElementOperation[] = []
+        const box = (
+          id: string,
+          text: string,
+          x: number,
+          y: number,
+          width: number,
+          height: number,
+          fontSize: number,
+          color: string,
+          options: { bold?: boolean; fill?: string; align?: 'left' | 'center' | 'right' } = {},
+        ) => {
+          operations.push({
+            kind: 'add_text_box',
+            clientId: id,
+            text,
+            geometry: {
+              x: geometryPxToPoints(x, scale),
+              y: geometryPxToPoints(y, scale),
+              width: geometryPxToPoints(width, scale),
+              height: geometryPxToPoints(height, scale),
+            },
+          })
+          if (options.fill)
+            operations.push({
+              kind: 'set_fill',
+              createdByClientId: id,
+              fill: { kind: 'solid', color: options.fill },
+            })
+          operations.push({
+            kind: 'set_text',
+            createdByClientId: id,
+            paragraphs: [
+              {
+                runs: [{ text, fontSize, color, ...(options.bold ? { bold: true } : {}) }],
+                ...(options.align ? { align: options.align } : {}),
+              },
+            ],
+          })
+        }
+        if (designed) {
+          const layout = page.layout ?? (slideIndex === 0 ? 'cover' : 'cards')
+          box(`deck-bg-${slideIndex}`, ' ', 0, 0, 1280, 720, 1, palette.background, {
+            fill: palette.background,
+          })
+          if (layout === 'cover' || (layout === 'statement' && page.imageUrl)) {
+            box(`deck-accent-${slideIndex}`, ' ', 72, 104, 10, 452, 1, palette.accent, {
+              fill: palette.accent,
+            })
+            if (page.kicker)
+              box(
+                `deck-kicker-${slideIndex}`,
+                page.kicker.toUpperCase(),
+                112,
+                112,
+                560,
+                34,
+                13,
+                palette.accent,
+                {
+                  bold: true,
+                },
+              )
+            box(
+              titleId,
+              page.title,
+              112,
+              180,
+              page.imageUrl ? 570 : 980,
+              210,
+              42,
+              palette.foreground,
+              {
+                bold: true,
+              },
+            )
+            box(
+              bodyId,
+              page.body.join('  ·  '),
+              112,
+              430,
+              page.imageUrl ? 570 : 960,
+              92,
+              19,
+              palette.muted,
+            )
+          } else if (layout === 'split_image') {
+            box(
+              `deck-index-${slideIndex}`,
+              String(slideIndex + 1).padStart(2, '0'),
+              72,
+              54,
+              80,
+              34,
+              14,
+              palette.accent,
+              { bold: true },
+            )
+            box(titleId, page.title, 72, 105, 540, 105, 32, palette.foreground, { bold: true })
+            page.body.forEach((text, index) =>
+              box(
+                `deck-item-${slideIndex}-${index}`,
+                `${index + 1}  ${text}`,
+                72,
+                245 + index * 94,
+                535,
+                68,
+                18,
+                palette.foreground,
+                {
+                  fill: palette.panel,
+                },
+              ),
+            )
+          } else if (layout === 'timeline') {
+            box(titleId, page.title, 72, 62, 1050, 80, 32, palette.foreground, { bold: true })
+            page.body.slice(0, 5).forEach((text, index, list) => {
+              const width = 1080 / list.length
+              box(
+                `deck-step-no-${slideIndex}-${index}`,
+                String(index + 1),
+                78 + index * width,
+                230,
+                54,
+                54,
+                20,
+                palette.background,
+                {
+                  bold: true,
+                  fill: palette.accent,
+                  align: 'center',
+                },
+              )
+              box(
+                `deck-step-${slideIndex}-${index}`,
+                text,
+                72 + index * width,
+                315,
+                width - 28,
+                150,
+                17,
+                palette.foreground,
+                {
+                  fill: palette.panel,
+                },
+              )
+            })
+          } else if (layout === 'statement') {
+            if (page.kicker)
+              box(
+                `deck-kicker-${slideIndex}`,
+                page.kicker.toUpperCase(),
+                118,
+                105,
+                1040,
+                34,
+                13,
+                palette.accent,
+                { bold: true, align: 'center' },
+              )
+            box(titleId, page.title, 148, 205, 984, 160, 38, palette.foreground, {
+              bold: true,
+              align: 'center',
+            })
+            box(bodyId, page.body.join(' · '), 210, 415, 860, 80, 18, palette.muted, {
+              align: 'center',
+            })
+          } else {
+            box(titleId, page.title, 72, 62, 1050, 80, 32, palette.foreground, { bold: true })
+            page.body.forEach((text, index, list) => {
+              const columns = Math.min(list.length > 6 ? 4 : 3, list.length)
+              const width = (1110 - (columns - 1) * 24) / columns
+              const row = Math.floor(index / columns)
+              const column = index % columns
+              const rows = Math.ceil(list.length / columns)
+              const height = rows > 1 ? 168 : 260
+              const rowGap = rows > 1 ? 37 : 0
+              box(
+                `deck-card-${slideIndex}-${index}`,
+                text,
+                72 + column * (width + 24),
+                210 + row * (height + rowGap),
+                width,
+                height,
+                18,
+                palette.foreground,
+                {
+                  fill: palette.panel,
+                },
+              )
+            })
+          }
+          box(
+            `deck-page-${slideIndex}`,
+            `${slideIndex + 1} / ${pages.length}`,
+            page.imageUrl && (layout === 'cover' || layout === 'statement') ? 586 : 1120,
+            660,
+            96,
+            24,
+            11,
+            palette.muted,
+            { align: 'right' },
+          )
+        }
+        const execution = await access.executePresentationOperation(
+          {
+            transactionId: await geometryToolTransactionId({
+              name: call.name,
+              invocationId: call.invocationId,
+              input: { page: slideIndex, title: page.title, body: page.body },
+            }),
+            slideIndex,
+            operations: designed
+              ? operations
+              : [
+                  {
+                    kind: 'add_text_box',
+                    clientId: titleId,
+                    text: page.title,
+                    geometry: {
+                      x: geometryPxToPoints(72, scale),
+                      y: geometryPxToPoints(54, scale),
+                      width: geometryPxToPoints(1136, scale),
+                      height: geometryPxToPoints(90, scale),
+                    },
+                  },
+                  {
+                    kind: 'set_text',
+                    createdByClientId: titleId,
+                    paragraphs: [{ runs: [{ text: page.title, fontSize: 30, bold: true }] }],
+                  },
+                  {
+                    kind: 'add_text_box',
+                    clientId: bodyId,
+                    text: page.body.join('\n'),
+                    geometry: {
+                      x: geometryPxToPoints(92, scale),
+                      y: geometryPxToPoints(180, scale),
+                      width: geometryPxToPoints(1096, scale),
+                      height: geometryPxToPoints(430, scale),
+                    },
+                  },
+                  {
+                    kind: 'set_text',
+                    createdByClientId: bodyId,
+                    paragraphs: page.body.map((text) => ({ runs: [{ text, fontSize: 20 }] })),
+                  },
+                ],
+          },
+          signal,
+        )
+        const outcome = textFamilyReceiptOutcome(execution.receipt)
+        deckMutated ||= outcome.mutated
+        if (outcome.mutated && state) {
+          state.builtPageIndexes?.add(slideIndex)
+          state.pendingReviewIndexes?.add(slideIndex)
+          await persistContract(access, state, 'producing')
+        }
+        if (!outcome.ok) {
+          if (state) state.awaitingBuildDeck = false
+          return {
+            output: `The deck was partially created before page ${slideIndex + 1} failed. Inspect or undo before retrying.`,
+            isError: true,
+            mutated: true,
+            stopToolBatch: true,
+            summary: outcome.detail ?? `Page ${slideIndex + 1} failed`,
+          }
+        }
+      }
+      if (designed) {
+        const failedImagePages: number[] = []
+        for (const slideIndex of pageIndexes) {
+          const page = pages[slideIndex]!
+          if (!page.imageUrl) continue
+          const layout = page.layout ?? (slideIndex === 0 ? 'cover' : 'split_image')
+          const placement =
+            layout === 'cover' || layout === 'statement'
+              ? { xPx: 730, yPx: 0, wPx: 550, hPx: 720 }
+              : { xPx: 660, yPx: 130, wPx: 548, hPx: 470 }
+          let inserted: Awaited<ReturnType<typeof window.slidesApi.insertImageUrl>>
+          if (state) state.authoritativeRefreshRequired = true
+          try {
+            inserted = await window.slidesApi.insertImageUrl({
+              slideIndex,
+              url: page.imageUrl,
+              ...placement,
+              fitWidthPx: access.fitWidthPx,
+            })
+          } catch {
+            if (signal?.aborted && state) state.awaitingBuildDeck = false
+            signal?.throwIfAborted()
+            // IPC may fail after a native write. Do not blindly retry the same
+            // image or lose the partial-mutation receipt to the generic catch.
+            failedImagePages.push(slideIndex + 1)
+            continue
+          }
+          if (signal?.aborted && state) state.awaitingBuildDeck = false
+          signal?.throwIfAborted()
+          if (!inserted) {
+            failedImagePages.push(slideIndex + 1)
+            continue
+          }
+          access.applySlide(slideIndex, inserted.slide)
+          if (state && failedImagePages.length === 0) state.authoritativeRefreshRequired = false
+        }
+        if (failedImagePages.length) {
+          if (state) state.awaitingBuildDeck = false
+          const refreshed = await refreshAuthoritativeState(access, state, signal)
+          return {
+            output: refreshed
+              ? `Deck text was created. Image insertion could not be confirmed on pages ${failedImagePages.join(', ')}; other images were attempted. Native document state has been refreshed. Read these pages before retrying because an image may already exist. Repair only missing or incorrect images in this turn. Do not rebuild the entire deck or report visual verification as complete.`
+              : `authoritative_reload_required: Deck text was created, but image insertion could not be confirmed on pages ${failedImagePages.join(', ')} and native state could not be refreshed. Do not retry images or claim verification from cached page data. Reload the document before further edits.`,
+            isError: true,
+            mutated: true,
+            stopToolBatch: true,
+            summary: t('aiFailInsertImage'),
+          }
+        }
+      }
+      if (state) {
+        for (const index of pageIndexes) state.builtPageIndexes?.add(index)
+        state.pendingReviewIndexes = new Set(pageIndexes)
+        // Prototype screenshot review may require targeted repairs before the remaining
+        // production batches are allowed. Unlock refinement as soon as the first planned
+        // batch exists; pendingReviewIndexes still prevents expansion until it passes.
+        state.awaitingBuildDeck = false
+        await persistContract(access, state, 'producing')
+      }
+      const references = state?.designContract
+        ? `${pageIndexes.map((index) => contractReference(state.designContract!, index)).join('\n')}\n`
+        : ''
+      const lifecycleSnapshot = state?.designContract
+        ? `\n\n${renderPresentationDesignContract(state.designContract)}`
+        : ''
+      return {
+        output: designed
+          ? `${references}Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')} with the planned theme, layouts, and ${pageIndexes.filter((index) => pages[index]?.imageUrl).length} placed images. Screenshot and inspect every page in this batch before continuing.${lifecycleSnapshot}`
+          : `${references}Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')}. Screenshot and inspect every page in this batch before continuing.${lifecycleSnapshot}`,
+        mutated: true,
+        summary: `Created ${pageIndexes.length} planned pages`,
       }
     }
 
@@ -1898,19 +4392,86 @@ async function executeTool(
       }
     }
 
-    case 'add_text_box':
+    case 'add_text_box': {
+      const idx = Number(call.input.slideIndex)
+      if (!slides[idx])
+        return fail(t('aiFailNewElement'), `slideIndex out of range (0-${slides.length - 1})`)
+      const paragraphs = toEditParagraphs(call.input.paragraphs)
+      if (!paragraphs) return fail(t('aiFailNewTextbox'), 'paragraphs must be a non-empty array')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
+      const clientId = 'created-text-box'
+      const canonical = paragraphs.map((paragraph) => ({
+        runs: paragraph.runs.map((run) => ({
+          ...run,
+          ...(run.color ? { color: run.color.toUpperCase() } : {}),
+        })),
+        ...(paragraph.align === 'left' ||
+        paragraph.align === 'center' ||
+        paragraph.align === 'right'
+          ? { align: paragraph.align }
+          : {}),
+      }))
+      const text = canonical.map((p) => p.runs.map((run) => run.text).join('')).join('\n')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              kind: 'add_text_box',
+              clientId,
+              text,
+              geometry: {
+                x: geometryPxToPoints(
+                  Number(call.input.x),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                y: geometryPxToPoints(
+                  Number(call.input.y),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                width: geometryPxToPoints(
+                  Number(call.input.w),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                height: geometryPxToPoints(
+                  Number(call.input.h),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+              },
+            },
+            { kind: 'set_text', createdByClientId: clientId, paragraphs: canonical },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailNewTextbox'), outcome.detail ?? 'Insertion was not applied')
+      const createdId =
+        execution.receipt.status === 'applied'
+          ? (execution.receipt.createdTargets?.find((target) => target.clientId === 'op-1')
+              ?.elementId ?? execution.receipt.createdIds?.[0])
+          : undefined
+      return {
+        output: outcome.mutated
+          ? `Created a new text box on page ${idx + 1}${createdId ? `, durable element id=${createdId}` : ''}.`
+          : `The requested text box already exists from this tool invocation.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
+        summary: t('aiSumNewTextbox', { n: idx + 1 }),
+      }
+    }
+
     case 'add_shape': {
       const idx = Number(call.input.slideIndex)
       if (!slides[idx])
         return fail(t('aiFailNewElement'), `slideIndex out of range (0-${slides.length - 1})`)
-      const isShape = call.name === 'add_shape'
       const paragraphs = toEditParagraphs(call.input.paragraphs)
-      if (!isShape && !paragraphs)
-        return fail(t('aiFailNewTextbox'), 'paragraphs must be a non-empty array')
-      const kind = isShape ? String(call.input.kind) : 'textbox'
-      if (isShape && !/^[a-zA-Z][a-zA-Z0-9]*$/.test(kind)) {
+      const kind = String(call.input.kind)
+      if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(kind))
         return fail(t('aiFailNewShape'), `Invalid shape name: ${kind}`)
-      }
       const r = await window.slidesApi.addElement({
         slideIndex: idx,
         kind,
@@ -1920,17 +4481,15 @@ async function executeTool(
         hPx: Number(call.input.h),
         fitWidthPx: access.fitWidthPx,
         ...(paragraphs ? { paragraphs } : {}),
-        ...(isShape && call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
+        ...(call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
       })
       signal?.throwIfAborted()
       if (!r) return fail(t('aiFailNewElement'), 'Insertion failed')
       access.applySlide(idx, r.slide)
       return {
-        output: `Created a new ${isShape ? 'shape' : 'text box'} on page ${idx + 1}, element id=${r.sourceId}.`,
+        output: `Created a new shape on page ${idx + 1}, element id=${r.sourceId}.`,
         mutated: true,
-        summary: isShape
-          ? t('aiSumNewShape', { n: idx + 1 })
-          : t('aiSumNewTextbox', { n: idx + 1 }),
+        summary: t('aiSumNewShape', { n: idx + 1 }),
       }
     }
 
@@ -2248,21 +4807,92 @@ async function executeTool(
         return fail(t('aiFailBackground'), `slideIndex out of range (0-${slides.length - 1} or -1)`)
       if (!/^#?[0-9a-fA-F]{6}$/.test(color))
         return fail(t('aiFailBackground'), 'color must be #RRGGBB')
-      const r = await window.slidesApi.editBackground({
-        slideIndex: idx,
-        color: color.startsWith('#') ? color : `#${color}`,
-        fitWidthPx: access.fitWidthPx,
-      })
-      signal?.throwIfAborted()
-      if (!r) return fail(t('aiFailBackground'), 'Setting failed')
-      access.applyDeck(r)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailBackground'), 'Canonical presentation transactions are unavailable')
+      const normalizedColor = `#${color.replace(/^#/, '').toUpperCase()}`
+      const backgrounds = (idx === -1 ? slides.map((_slide, slideIndex) => slideIndex) : [idx]).map(
+        (slideIndex) => ({ slideIndex, color: normalizedColor }),
+      )
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await backgroundToolTransactionId(call),
+          backgrounds,
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailBackground'), outcome.detail ?? 'Setting was not applied')
       return {
         output:
           idx === -1
-            ? `Set the background of all ${r.length} pages to ${color}.`
-            : `Set the background of page ${idx + 1} to ${color}.`,
-        mutated: true,
+            ? `${outcome.mutated ? 'Set' : 'Kept'} the background of all ${slides.length} pages at ${normalizedColor}.`
+            : `${outcome.mutated ? 'Set' : 'Kept'} the background of page ${idx + 1} at ${normalizedColor}.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
         summary: idx === -1 ? t('aiSumBackgroundAll') : t('aiSumBackground', { n: idx + 1 }),
+      }
+    }
+
+    case 'set_speaker_notes': {
+      const idx = call.input.slideIndex
+      const text = call.input.text
+      if (typeof idx !== 'number' || !Number.isInteger(idx) || !slides[idx])
+        return fail(t('aiFailEditText'), `slideIndex out of range (0-${slides.length - 1})`)
+      if (typeof text !== 'string')
+        return fail(t('aiFailEditText'), 'speaker notes text must be a string')
+      if (text.length > 12_000)
+        return fail(t('aiFailEditText'), 'speaker notes exceed the 12000 character limit')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailEditText'), 'speaker notes are unavailable in this host')
+      const draftPreparation = (await access.prepareSpeakerNotesWrite?.(idx)) ?? {
+        ready: true,
+        expectedDraftVersion: 0,
+      }
+      if (!draftPreparation.ready)
+        return fail(
+          t('aiFailEditText'),
+          'Speaker notes changed or could not be saved before the agent edit. No change was applied.',
+        )
+      signal?.throwIfAborted()
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await textToolTransactionId(call),
+          slideIndex: idx,
+          operation: { kind: 'set_speaker_notes', notes: text },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The speaker notes were applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumEditText', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The speaker notes write could not be verified. Inspect the slide notes before retrying.'
+            : `The speaker notes were not changed (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailEditText'),
+        }
+      }
+      if (outcome.mutated)
+        access.applySpeakerNotes?.(idx, text, draftPreparation.expectedDraftVersion)
+      return {
+        output: outcome.mutated
+          ? text
+            ? `Wrote speaker notes for page ${idx + 1} (${text.length} characters).`
+            : `Cleared speaker notes for page ${idx + 1}.`
+          : `Speaker notes on page ${idx + 1} already matched.`,
+        mutated: outcome.mutated,
+        summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }
 
@@ -2280,17 +4910,27 @@ async function executeTool(
           `Element ${sourceId} is inside a group${gid ? ` (${gid})` : ''}; call ungroup_element on the group first and then delete it, or delete the whole group`,
         )
       }
-      const updated = await window.slidesApi.deleteElement({ slideIndex: idx, sourceId })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(
-          t('aiFailDeleteElement'),
-          `Element ${sourceId} not found on page ${idx + 1} (ids change after regenerate/ungroup/save; call read_slide for fresh ids)`,
-        )
-      access.applySlide(idx, updated)
+      if (!target)
+        return fail(t('aiFailDeleteElement'), `Element ${sourceId} not found on page ${idx + 1}`)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailDeleteElement'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [{ sourceId, kind: 'delete_element' }],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailDeleteElement'), outcome.detail ?? 'Deletion was not applied')
       return {
-        output: `Deleted element ${sourceId} from page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Deleted element ${sourceId} from page ${idx + 1}.`
+          : `Element ${sourceId} was already deleted by this tool invocation.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
         summary: t('aiSumDeleteElement', { n: idx + 1 }),
       }
     }

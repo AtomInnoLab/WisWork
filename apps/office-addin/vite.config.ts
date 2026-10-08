@@ -11,6 +11,7 @@ import {
   officeBuildId,
   officeDiagnosticSamplePercent,
   officePresentationRolloutPercent,
+  officePairingResumeEnabled,
   renderDeploymentManifest,
 } from './build-config.js'
 
@@ -29,6 +30,7 @@ function gitBuildId(): string {
 export default defineConfig(async ({ command, mode }) => {
   const env = loadEnv(mode, here, '')
   const buildId = officeBuildId(env, process.env.GITHUB_SHA?.slice(0, 12) || gitBuildId())
+  const pairingResumeEnabled = officePairingResumeEnabled(env)
   const deployment = deploymentConfig(env)
   const allowedConnectOrigins = deploymentConnectOrigins(env)
   const icon = await readFile(resolve(here, '../shell/src/main/assets/menu-docx@2x.png'))
@@ -82,6 +84,7 @@ export default defineConfig(async ({ command, mode }) => {
     optimizeDeps: { include: ['react', 'react-dom/client', 'react/jsx-dev-runtime'] },
     define: {
       __WISWORK_OFFICE_BUILD_ID__: JSON.stringify(buildId),
+      __WISWORK_OFFICE_PAIRING_RESUME__: JSON.stringify(pairingResumeEnabled),
     },
     worker: {
       format: 'es' as const,

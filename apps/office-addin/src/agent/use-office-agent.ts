@@ -1,15 +1,17 @@
 import {
   suspendToolExecution,
   parseAgentResumeMessages,
+  encodeOfficeScreenshotResult,
   type AgentMessage,
   type AgentSkill,
   type AgentToolCall,
-  type AgentTransport,
   type ToolExecution,
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
 import { acpToolActivity, createAgentHarness } from '@wiswork/agent-harness'
 import { presentationRecoveryReceiptFeedback } from './presentation-recovery-feedback.js'
+import type { OfficePowerPointVisualReviewer } from '../skills/powerpoint/powerpoint-verification.js'
+import { withPrefetchedPowerPointImage } from '../skills/powerpoint/powerpoint-import-media.js'
 import { useSyncExternalStore } from 'react'
 import type { OfficeHost } from '../office-document.js'
 import type {
@@ -23,6 +25,7 @@ import {
   boundedText,
   emptyPresentationTimeline,
   replacePresentationEvent,
+  type OfficeClarificationQuestion,
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
   type ToolPresentationEvent,
@@ -32,6 +35,8 @@ import {
   type OfficeDiagnostics,
   type PresentationDiagnosticContext,
 } from '../diagnostics/office-diagnostics.js'
+import type { PresentationVerificationStringKey } from '@wiswork/i18n'
+import { MAX_OBSERVED_TOOL_CALLS, type OfficeAgentTransport } from './transport.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -46,6 +51,7 @@ export interface OfficeAgentSnapshot {
   retryable: boolean
   recoveryAvailable?: boolean
   proposal?: OfficeProposal | StructuredProposal
+  questionnaire?: readonly OfficeClarificationQuestion[]
   timeline: OfficePresentationTimeline
 }
 
@@ -53,12 +59,15 @@ export interface OfficeAgentSession {
   snapshot(): OfficeAgentSnapshot
   subscribe(listener: () => void): () => void
   send(instruction: string): void
+  reviseDesignContract?(designMd: string): void
   stop(): void
   confirm(id: string): Promise<void>
   reject(): void
   newTask(): void
   retry(): void
   resumeInterrupted?(): Promise<void>
+  answerQuestionnaire?(answers: string): void
+  skipQuestionnaire?(): void
   logout(): void
   authenticationLost(): void
   dispose(): void
@@ -129,12 +138,25 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
   },
   office_state_uncertain: {
     code: 'office_state_uncertain',
-    message: 'The change may be partially applied. Inspect the document before trying again.',
+    message:
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reload the document before trying again.',
+    retryable: false,
+  },
+  office_applied_unverified: {
+    code: 'office_applied_unverified',
+    message:
+      'The change may have been applied, but verification was unavailable. Inspect the document before continuing.',
     retryable: false,
   },
 })
 
 const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
+  session_expired: {
+    code: 'session_expired',
+    message:
+      'The connection authorization expired. Reconnect to WisWork PC, then continue the unfinished work; existing changes are preserved.',
+    retryable: false,
+  },
   auth_required: {
     code: 'auth_required',
     message: 'Sign in to WisWork PC, reconnect, and try again.',
@@ -147,7 +169,7 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
   },
   provider_unavailable: {
     code: 'provider_unavailable',
-    message: 'The Agent service is temporarily unavailable. Try again.',
+    message: 'The Agent service is temporarily unavailable. Your progress is saved.',
     retryable: true,
   },
   request_timeout: {
@@ -159,6 +181,12 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
     code: 'presentation_run_checkpoint_unavailable',
     message:
       'The tool may have changed this presentation, but its completion record could not be saved. Inspect the document before starting another task.',
+    retryable: false,
+  },
+  transport_stream_budget_exceeded: {
+    code: 'transport_stream_budget_exceeded',
+    message:
+      'The task reached its response limit. Existing changes are preserved; continue the unfinished pages in a new request.',
     retryable: false,
   },
 })
@@ -180,23 +208,150 @@ const safeConfirmationError = (error: unknown): SafeSessionError => {
   )
 }
 
-const safeRunError = (error: string): SafeSessionError =>
-  runErrors[error === 'transport_timeout' ? 'request_timeout' : error] ?? {
-    code: 'agent_run_failed',
-    message: 'The Agent could not complete this request. Try again.',
-    retryable: true,
+const safeRunError = (error: string): SafeSessionError => {
+  const aliases: Readonly<Record<string, string>> = {
+    transport_timeout: 'request_timeout',
+    transport_auth: 'auth_required',
+    transport_http_401: 'auth_required',
+    transport_http_403: 'auth_required',
+    transport_http_408: 'request_timeout',
+    transport_http_429: 'provider_unavailable',
+    transport_http_500: 'provider_unavailable',
+    transport_http_502: 'provider_unavailable',
+    transport_http_503: 'provider_unavailable',
+    transport_http_504: 'request_timeout',
+    transport_network: 'network_error',
   }
+  const code = Object.hasOwn(aliases, error) ? aliases[error]! : error
+  return (
+    (Object.hasOwn(runErrors, code) ? runErrors[code] : undefined) ?? {
+      code: 'agent_run_failed',
+      message: 'The Agent could not complete this request. Try again.',
+      retryable: true,
+    }
+  )
+}
+
+function toolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
+  const labels: Readonly<Record<string, string>> = {
+    web_search: '网页搜索',
+    web_fetch: '读取网页',
+    image_search: '图片搜索',
+    insert_web_image: '插入网络图片',
+    'insert-image': '插入图片',
+    plan_deck: '规划演示文稿',
+    screenshot_slide: '检查幻灯片',
+    verify_slides: '验证演示文稿',
+    inspect_slide_masters: '检查母版',
+    list_slide_shapes: '读取页面元素',
+    read_slide_text: '读取幻灯片内容',
+    edit_slide_text: '编辑幻灯片文字',
+    edit_slide_xml: '编辑幻灯片版式',
+    edit_slide_chart: '编辑图表',
+    duplicate_slide: '复制幻灯片',
+    execute_office_js: '制作幻灯片',
+  }
+  const label = labels[name]
+  if (label)
+    return state === 'running' ? label : state === 'error' ? label + '未完成' : label + '完成'
+  const attachment = name === 'read' || name === 'bash'
+  const read = /^(?:get_|read_|list_|search_|screenshot_|verify_)/.test(name)
+  const action = attachment ? '处理附件' : read ? '读取内容' : '准备修改'
+  return state === 'running'
+    ? '正在' + action + '…'
+    : state === 'error'
+      ? action + '未完成'
+      : '已' + action
+}
+
+const DIAGNOSTIC_TOOL_ERRORS = new Set([
+  'cancelled',
+  'design_contract_review_required',
+  'design_contract_prototype_required',
+  'design_contract_production_incomplete',
+  'design_contract_verification_failed',
+  'design_contract_visual_review_failed',
+  'design_contract_invalid_status',
+  'design_contract_review_not_pending',
+  'design_contract_acceptance_mismatch',
+  'design_contract_screenshot_required',
+  'image_fetch_unavailable',
+  'image_limit',
+  'image_mime_unsupported',
+  'invalid_image',
+  'invalid_tool_input',
+  'office_api_unsupported',
+  'office_read_failed',
+  'office_screenshot_unavailable',
+  'office_overwrite_required',
+  'office_recovery_failed',
+  'office_concurrent_change',
+  'office_state_uncertain',
+  'office_verify_failed',
+  'office_write_failed',
+  'proposal_missing',
+  'proposal_stale',
+])
+
+const IMAGE_FAILURE_MESSAGES: Readonly<Record<string, string>> = {
+  image_fetch_unavailable: '图片暂时无法获取',
+  image_limit: '图片超过大小限制',
+  image_mime_unsupported: '图片格式不受支持',
+  invalid_image: '图片数据无效',
+  invalid_tool_input: '图片插入参数无效',
+  cancelled: '图片操作已取消',
+}
+
+const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
+  'set_slide_background',
+  'edit_slide_text',
+  'execute_office_js',
+  'edit_slide_xml',
+  'edit_slide_chart',
+  'edit_slide_master',
+  'edit_slide_master_xml',
+  'duplicate_slide',
+  'insert-image',
+  'insert_web_image',
+])
+
+const AUTOMATIC_RECOVERY_DELAYS_MS = [2_000, 8_000] as const
+const AUTOMATIC_RECOVERY_ERRORS = new Set([
+  'network_error',
+  'provider_unavailable',
+  'request_timeout',
+])
+const RECOVERY_INSTRUCTION =
+  'Resume the interrupted task from the current Office document state. Inspect the document and active design contract first, preserve completed work, and continue only unfinished or failed steps. Do not repeat a successful write. Verify the final result before completing.'
 
 function diagnosticToolError(output: string): string {
-  if (isDiagnosticToolError(output)) return output
+  if (output.startsWith('design_contract_visual_review_failed:'))
+    return 'design_contract_visual_review_failed'
+  if (output === 'raw_office_program_invalid') return 'invalid_tool_input'
+  const safe = (value: string) =>
+    isDiagnosticToolError(value) ||
+    DIAGNOSTIC_TOOL_ERRORS.has(value) ||
+    /^office_recovery_failed:word_[a-z_]+$/.test(value)
+  if (safe(output)) return output
   try {
-    const parsed = JSON.parse(output) as { error?: unknown }
-    return typeof parsed.error === 'string' && isDiagnosticToolError(parsed.error)
+    const parsed = JSON.parse(output) as { error?: unknown; reason?: unknown }
+    if (parsed.error === 'office_read_failed' && parsed.reason === 'office_screenshot_unavailable')
+      return 'office_screenshot_unavailable'
+    return typeof parsed.error === 'string' && safe(parsed.error)
       ? parsed.error
       : 'agent_run_failed'
   } catch {
     return 'agent_run_failed'
   }
+}
+
+export function presentationClarificationText(
+  question: string,
+  translate?: (key: PresentationVerificationStringKey) => string,
+): string {
+  if (!question || question === 'presentation_scope_required')
+    return translate?.('clarify') ?? 'More information needed'
+  return boundedText(question)
 }
 
 function screenshotWaitingDiagnostic(
@@ -256,7 +411,7 @@ function presentationDiagnosticContext(
 
 export function createOfficeAgentSession(dependencies: {
   host?: OfficeHost
-  transport: AgentTransport
+  transport: OfficeAgentTransport
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
@@ -294,8 +449,104 @@ export function createOfficeAgentSession(dependencies: {
     conversation?(runId: string, messages: readonly AgentMessage[]): Promise<void>
     adopt?(runId: string, messages: readonly AgentMessage[]): Promise<void>
   }
+  presentationText?: (key: PresentationVerificationStringKey) => string
+  /**
+   * PC-managed PowerPoint autonomy. Ordinary bounded proposals still use the Office
+   * validate/write/verify transaction, but do not interrupt the run with UI confirmation.
+   * Elevated raw Office proposals are never eligible.
+   */
+  automaticPowerPointMutations?: boolean
+  remoteTools?: {
+    setToolHandler?(
+      handler:
+        | ((call: {
+            turnId: string
+            callId: string
+            generation: number
+            toolName: string
+            input: Record<string, unknown>
+            signal: AbortSignal
+          }) => Promise<{ output: string; isError?: boolean }>)
+        | undefined,
+    ): void
+  }
 }): OfficeAgentSession {
   const { proposals } = dependencies
+  const isAutomaticProposal = (
+    proposal: OfficeProposal | StructuredProposal | undefined,
+  ): proposal is StructuredProposal =>
+    dependencies.automaticPowerPointMutations === true &&
+    !dependencies.runCheckpoint &&
+    (!proposal || !('lockReview' in proposal) || proposal.lockReview === undefined) &&
+    proposal !== undefined &&
+    'impact' in proposal &&
+    proposal.impact.host.toLowerCase() === 'powerpoint' &&
+    typeof proposal.toolName === 'string' &&
+    AUTOMATIC_POWERPOINT_MUTATION_TOOLS.has(proposal.toolName)
+  const visibleProposal = () => {
+    const proposal = proposals.pending()
+    return isAutomaticProposal(proposal) ? undefined : proposal
+  }
+  const presentation = dependencies.skill.presentation as
+    | (NonNullable<AgentSkill['presentation']> & {
+        setReviewer?: (reviewer: OfficePowerPointVisualReviewer) => void
+      })
+    | undefined
+  presentation?.setReviewer?.({
+    review: (request) =>
+      new Promise((resolve) => {
+        let output = ''
+        let settled = false
+        const reviewHandle: { current?: { cancel(): void } } = {}
+        const unavailable = {
+          status: 'cannot_verify' as const,
+          failedCheckIds: [],
+          observations: [{ code: 'review_unavailable' as const, severity: 'warning' as const }],
+          fixIntents: [],
+        }
+        const finish = (value: Parameters<typeof resolve>[0], cancel = false) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          request.signal?.removeEventListener('abort', abort)
+          if (cancel) reviewHandle.current?.cancel()
+          resolve(value)
+        }
+        const abort = () => finish(unavailable, true)
+        const timer = setTimeout(() => finish(unavailable, true), 15_000)
+        request.signal?.addEventListener('abort', abort, { once: true })
+        if (request.signal?.aborted) abort()
+        reviewHandle.current = dependencies.transport.stream(
+          {
+            system:
+              'Review only the supplied PowerPoint screenshots against the bounded check IDs. Return strict JSON matching VisualReviewResult. Do not request tools, infer hidden text, or add targets.',
+            messages: [
+              {
+                role: 'user',
+                text: JSON.stringify({ facts: request.facts }),
+                images: request.images.map(({ base64, mime }) => ({ base64, mime })),
+              },
+            ],
+            tools: [],
+          },
+          {
+            onDelta: (text) => {
+              if (output.length < 64 * 1024) output += text
+            },
+            onToolCall: () => finish(unavailable, true),
+            onDone: () => {
+              try {
+                finish(JSON.parse(output))
+              } catch {
+                finish(unavailable)
+              }
+            },
+            onError: () => finish(unavailable),
+          },
+        )
+        if (settled) reviewHandle.current.cancel()
+      }),
+  })
   const diagnose = (
     action: (diagnostics: NonNullable<typeof dependencies.diagnostics>) => void,
   ) => {
@@ -349,12 +600,12 @@ export function createOfficeAgentSession(dependencies: {
         })
       : emptyPresentationTimeline(),
   }
-  let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
+  let cached: OfficeAgentSnapshot = { ...state, proposal: visibleProposal() }
 
   const publish = (next: Partial<typeof state> = {}) => {
     if (disposed) return
     state = { ...state, ...next }
-    cached = { ...state, proposal: proposals.pending() }
+    cached = { ...state, proposal: visibleProposal() }
     listeners.forEach((listener) => listener())
   }
 
@@ -425,15 +676,47 @@ export function createOfficeAgentSession(dependencies: {
   }
   let activeAssistantId: string | undefined
   let lastInstruction = ''
+  let clarificationResolve: ((value: ToolExecution) => void) | undefined
+  let questionnaireAnsweredPendingPlan = false
   let runStartedAt = 0
+  let automaticRecoveryAttempt = 0
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined
   const staleTools = new Set<string>()
   const toolStartedAt = new Map<string, number>()
+  // Canonical observation is authoritative even when a relay execution receipt arrives first.
+  const observedTools = new Map<string, 'running' | 'settled'>()
+  const recordedToolFailures = new Set<string>()
+  const recordToolFailure = (
+    callId: string,
+    toolName: string,
+    errorCode: string,
+    durationMs: number,
+    error?: unknown,
+  ) => {
+    if (recordedToolFailures.has(callId) || recordedToolFailures.size >= MAX_OBSERVED_TOOL_CALLS)
+      return
+    recordedToolFailures.add(callId)
+    diagnose((diagnostics) => {
+      diagnostics.setTool(toolName)
+      diagnostics.record({
+        phase: 'tool',
+        errorCode,
+        durationMs: Math.max(0, durationMs),
+        ...(error === undefined ? {} : { error }),
+      })
+    })
+  }
   const eventId = () => `event-${++nextEventId}`
   const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
     state = { ...state, timeline: appendPresentationEvent(state.timeline, event) }
   }
   const replace = (id: string, update: Parameters<typeof replacePresentationEvent>[2]) => {
     state = { ...state, timeline: replacePresentationEvent(state.timeline, id, update) }
+  }
+  const closeAssistantSegment = () => {
+    if (!activeAssistantId) return
+    replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+    activeAssistantId = undefined
   }
   const pendingProposalEvent = () =>
     [...state.timeline]
@@ -443,7 +726,7 @@ export function createOfficeAgentSession(dependencies: {
           event.kind === 'proposal' && event.state === 'pending',
       )
   const appendPendingProposal = () => {
-    const proposal = proposals.pending()
+    const proposal = visibleProposal()
     const existing =
       proposal &&
       state.timeline.find((event) => event.kind === 'proposal' && event.proposal.id === proposal.id)
@@ -508,6 +791,28 @@ export function createOfficeAgentSession(dependencies: {
         summary: 'Applied approved change',
       }
     }
+    if (decision.status === 'applied_unverified') {
+      const writePending = decision.safeCode === 'office_write_pending'
+      return {
+        output: JSON.stringify({
+          proposalId,
+          status: writePending ? 'write_pending' : 'applied_unverified',
+          ...(writePending
+            ? {
+                safeCode: 'office_write_pending',
+                instruction:
+                  'The write outcome is unresolved. Do not claim success and do not attempt another edit.',
+              }
+            : {}),
+        }),
+        mutated: true,
+        summary: writePending
+          ? (dependencies.presentationText?.('write_pending_quarantined') ??
+            'Write may still be running; further edits are frozen pending reconciliation or reload.')
+          : 'Applied; verification unavailable',
+        stopToolBatch: true,
+      }
+    }
     if (decision.status === 'failed') {
       const stale =
         decision.error === 'proposal_stale' ||
@@ -520,10 +825,18 @@ export function createOfficeAgentSession(dependencies: {
           proposalId,
           status: 'failed',
           error: decision.error,
-          instruction: stale ? 'Do not retry this write in the current turn.' : undefined,
+          ...(decision.errorLocation ? { errorLocation: decision.errorLocation } : {}),
+          instruction:
+            decision.error === 'proposal_stale'
+              ? 'Do not retry this write in the current turn.'
+              : decision.error === 'office_verify_failed'
+                ? 'Some operations may already have been applied. Read the current slide and shapes before making a small corrective edit; do not repeat the whole batch. If fontFamily failed, Office did not confirm that font: preserve the current family and apply size/color separately, then screenshot and review the result.'
+                : undefined,
         }),
         isError: true,
-        mutated: false,
+        // Verification is after execute: keep the repair/final-review loop active
+        // even when this was the only write attempted in the turn.
+        mutated: decision.error === 'office_verify_failed',
         summary: 'Approved change failed',
         stopToolBatch: stale,
       }
@@ -543,8 +856,77 @@ export function createOfficeAgentSession(dependencies: {
 
   const sessionSkill: AgentSkill = {
     ...dependencies.skill,
+    reviewFinalResponse(context) {
+      if (questionnaireAnsweredPendingPlan)
+        return '[System correction] The questionnaire is complete. Continue the WisWork Slides workflow with plan_deck, research, implementation, screenshot inspection, repair, and verify_slides in this same run.'
+      return dependencies.skill.reviewFinalResponse?.(context)
+    },
     async executeTool(call, signal): Promise<ToolExecutionOutcome> {
       toolsStarted = true
+      if (call.name === 'ask_clarification') {
+        if (clarificationResolve)
+          return {
+            output: 'questionnaire_in_progress',
+            isError: true,
+            mutated: false,
+            summary: 'Questionnaire already active',
+          }
+        const raw = Array.isArray(call.input.questions) ? call.input.questions : []
+        const questions: OfficeClarificationQuestion[] = raw
+          .slice(0, 1)
+          .map((value, index) => {
+            const item =
+              value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+            return {
+              id: typeof item.id === 'string' ? item.id.slice(0, 40) : `q${index + 1}`,
+              label: typeof item.label === 'string' ? boundedText(item.label).slice(0, 300) : '',
+              ...(typeof item.description === 'string'
+                ? { description: boundedText(item.description).slice(0, 300) }
+                : {}),
+              options: Array.isArray(item.options)
+                ? item.options
+                    .flatMap((option) => {
+                      if (typeof option === 'string') return [boundedText(option).slice(0, 120)]
+                      if (!option || typeof option !== 'object' || Array.isArray(option)) return []
+                      const label = (option as Record<string, unknown>).label
+                      return typeof label === 'string' ? [boundedText(label).slice(0, 120)] : []
+                    })
+                    .filter(Boolean)
+                    .slice(0, 5)
+                : [],
+            }
+          })
+          .filter((question) => question.label && question.options.length >= 2)
+        if (questions.length < 1)
+          return {
+            output: 'invalid_tool_input',
+            isError: true,
+            mutated: false,
+            summary: 'Questionnaire input invalid',
+          }
+        return suspendToolExecution(
+          new Promise<ToolExecution>((resolve) => {
+            clarificationResolve = resolve
+            publish({ questionnaire: questions, activity: '等待你完成问卷' })
+            signal?.addEventListener(
+              'abort',
+              () => {
+                if (clarificationResolve === resolve) {
+                  clarificationResolve = undefined
+                  publish({ questionnaire: undefined })
+                }
+                resolve({
+                  output: 'cancelled',
+                  isError: true,
+                  mutated: false,
+                  summary: 'Questionnaire cancelled',
+                })
+              },
+              { once: true },
+            )
+          }),
+        )
+      }
       if (staleTools.has(call.name)) {
         return {
           output: JSON.stringify({
@@ -614,17 +996,206 @@ export function createOfficeAgentSession(dependencies: {
       const outcome = await dependencies.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension')
         return suspendToolExecution(outcome.result.then(checkpointed))
+      if (call.name === 'plan_deck' && !outcome.isError) questionnaireAnsweredPendingPlan = false
       const proposal = proposals.pending()
-      if (proposal)
-        return suspendToolExecution(
-          finalProposalExecution(proposal.id, outcome, call.name).then(checkpointed),
-        )
-      return checkpointed(outcome)
+      if (!proposal) return checkpointed(outcome)
+      const final = finalProposalExecution(proposal.id, outcome, call.name).then(checkpointed)
+      if (isAutomaticProposal(proposal)) {
+        void proposals.confirm(proposal.id).catch(() => undefined)
+      }
+      return suspendToolExecution(final)
     },
   }
+  dependencies.transport.setToolActivityHandler?.((activity) => {
+    if (disposed || !state.busy) return
+    const existing = state.timeline.find(
+      (event) => event.kind === 'tool' && event.callId === activity.callId,
+    )
+    const summary = toolActivity(activity.toolName, activity.state)
+    if (activity.state === 'running') {
+      if (observedTools.has(activity.callId) || observedTools.size >= MAX_OBSERVED_TOOL_CALLS)
+        return
+      observedTools.set(activity.callId, 'running')
+      if (existing) return
+      closeAssistantSegment()
+      diagnose((diagnostics) => diagnostics.setTool(activity.toolName))
+      append({
+        id: eventId(),
+        kind: 'tool',
+        callId: activity.callId,
+        name: activity.toolName,
+        summary,
+        state: 'running',
+        ...(activity.query ? { output: activity.query } : {}),
+      })
+    } else {
+      if (!existing || existing.kind !== 'tool' || observedTools.get(activity.callId) !== 'running')
+        return
+      observedTools.set(activity.callId, 'settled')
+      const imageError =
+        activity.state === 'error' &&
+        (activity.toolName === 'insert_web_image' || activity.toolName === 'insert-image') &&
+        typeof activity.summary === 'string' &&
+        Object.hasOwn(IMAGE_FAILURE_MESSAGES, activity.summary)
+          ? activity.summary
+          : undefined
+      if (imageError)
+        recordToolFailure(
+          activity.callId,
+          activity.toolName,
+          imageError,
+          Date.now() - activity.startedAt,
+        )
+      replace(existing.id, (event) =>
+        event.kind !== 'tool'
+          ? event
+          : {
+              ...event,
+              state: activity.state,
+              summary:
+                summary +
+                (activity.resultCount === undefined ? '' : ` · ${activity.resultCount} 条结果`),
+              durationMs: Math.max(0, Date.now() - activity.startedAt),
+              output: imageError
+                ? `${IMAGE_FAILURE_MESSAGES[imageError]}（${imageError}）`
+                : activity.query
+                  ? [activity.query, activity.summary].filter(Boolean).join('\n')
+                  : (event.output ?? activity.summary ?? ''),
+              ...(activity.display ? { display: activity.display } : {}),
+            },
+      )
+    }
+    publish({ activity: summary })
+  })
+  dependencies.remoteTools?.setToolHandler?.(async (call) => {
+    if (disposed || call.signal.aborted) return { output: 'tool_cancelled', isError: true }
+    const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
+    if (!definition) return { output: 'unknown_tool', isError: true }
+    const epoch = sessionEpoch
+    const current = () => !disposed && epoch === sessionEpoch
+    closeAssistantSegment()
+    diagnose((diagnostics) => diagnostics.setTool(call.toolName))
+    const existing = state.timeline.find(
+      (event) => event.kind === 'tool' && event.callId === call.callId,
+    )
+    const presentationId = existing?.id ?? eventId()
+    const startedAt = Date.now()
+    const runningSummary = toolActivity(call.toolName, 'running')
+    if (!existing)
+      append({
+        id: presentationId,
+        kind: 'tool',
+        callId: call.callId,
+        name: boundedText(call.toolName),
+        summary: runningSummary,
+        state: 'running',
+      })
+    publish({ activity: runningSummary })
+    const invalidateRemoteProposal = () => {
+      if (!current()) return
+      proposals.newTurn()
+      replace(presentationId, (event) =>
+        event.kind === 'tool' && event.state === 'running'
+          ? { ...event, summary: toolActivity(call.toolName, 'error'), state: 'error' }
+          : event,
+      )
+      publish()
+    }
+    call.signal.addEventListener('abort', invalidateRemoteProposal, { once: true })
+    try {
+      const outcome = await sessionSkill.executeTool(
+        withPrefetchedPowerPointImage({
+          id: call.callId,
+          invocationId: `${call.turnId}:${call.callId}`,
+          name: call.toolName,
+          input: call.input,
+        }),
+        call.signal,
+      )
+      let settled =
+        'kind' in outcome && outcome.kind === 'tool-execution-suspension'
+          ? await Promise.race([
+              outcome.result,
+              new Promise<never>((_, reject) => {
+                if (call.signal.aborted) reject(new DOMException('Aborted', 'AbortError'))
+                else
+                  call.signal.addEventListener(
+                    'abort',
+                    () => reject(new DOMException('Aborted', 'AbortError')),
+                    { once: true },
+                  )
+              }),
+            ])
+          : outcome
+      let screenshotOutput: string | undefined
+      if (call.toolName === 'screenshot_slide' && !settled.isError) {
+        try {
+          screenshotOutput = encodeOfficeScreenshotResult(settled.output, settled.modelContent)
+        } catch {
+          settled = { ...settled, output: 'office_screenshot_unavailable', isError: true }
+        }
+      }
+      const finishedSummary = toolActivity(call.toolName, settled.isError ? 'error' : 'complete')
+      if (!current() || call.signal.aborted) return { output: 'tool_cancelled', isError: true }
+      const observed = observedTools.has(call.callId)
+      replace(presentationId, (event) =>
+        event.kind === 'tool' && event.state === 'running'
+          ? {
+              ...event,
+              summary: observed ? event.summary : finishedSummary,
+              state: observed ? event.state : settled.isError ? 'error' : 'complete',
+              durationMs: Date.now() - startedAt,
+              output: boundedText(settled.output),
+              ...(settled.display ? { display: settled.display } : {}),
+            }
+          : event,
+      )
+      publish(observed ? {} : { activity: finishedSummary })
+      if (settled.isError) {
+        const errorCode = diagnosticToolError(settled.output)
+        recordToolFailure(
+          call.callId,
+          call.toolName,
+          errorCode,
+          Date.now() - startedAt,
+          settled.diagnosticError,
+        )
+      }
+      return {
+        output: screenshotOutput ?? settled.output,
+        ...(settled.isError ? { isError: true } : {}),
+      }
+    } catch {
+      if (!current()) return { output: 'tool_cancelled', isError: true }
+      const failedSummary = toolActivity(call.toolName, 'error')
+      const observed = observedTools.has(call.callId)
+      replace(presentationId, (event) =>
+        event.kind === 'tool' && event.state === 'running'
+          ? {
+              ...event,
+              summary: observed ? event.summary : failedSummary,
+              state: observed ? event.state : 'error',
+              durationMs: Date.now() - startedAt,
+            }
+          : event,
+      )
+      publish(observed ? {} : { activity: failedSummary })
+      recordToolFailure(
+        call.callId,
+        call.toolName,
+        call.signal.aborted ? 'cancelled' : 'tool_execution_failed',
+        Date.now() - startedAt,
+      )
+      if (call.signal.aborted) proposals.newTurn()
+      return { output: 'tool_execution_failed', isError: true }
+    } finally {
+      call.signal.removeEventListener('abort', invalidateRemoteProposal)
+    }
+  })
   const clearConversation = () => {
     checkpointBeginFailed = false
     activeAssistantId = undefined
+    questionnaireAnsweredPendingPlan = false
     state = {
       ...state,
       assistantText: '',
@@ -637,6 +1208,7 @@ export function createOfficeAgentSession(dependencies: {
       retryable: false,
       recoveryAvailable: false,
       timeline: emptyPresentationTimeline(),
+      questionnaire: undefined,
     }
   }
 
@@ -650,6 +1222,40 @@ export function createOfficeAgentSession(dependencies: {
           ? '\nAn audited read-only tool was interrupted before its result was saved. No result from that call was restored. Re-read the live document/project state and reestablish any session-only baseline before making changes or claiming a result.'
           : '',
     events: {
+      onPresentationClarify: ({ question }) =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: presentationClarificationText(question, dependencies.presentationText),
+        }),
+      onPresentationPlan: ({ steps, requiresConfirmation }) =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: [
+            dependencies.presentationText?.('plan') ?? 'plan',
+            ...steps.map(
+              (step) =>
+                `• ${
+                  dependencies.presentationText?.(
+                    step === 'presentation_verify_postconditions'
+                      ? 'verify_postconditions'
+                      : 'apply_bounded_edits',
+                  ) ?? step
+                }`,
+            ),
+            ...(requiresConfirmation
+              ? [dependencies.presentationText?.('needs_user') ?? 'needs_user']
+              : []),
+          ].join('\n'),
+        }),
+      onPresentationCorrection: () =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: dependencies.presentationText?.('correction') ?? 'correction',
+        }),
+      onPresentationReceipt: ({ facts }) => dependencies.presentationText?.(facts.status),
       onText: (assistantText) => {
         // Presentation is driven by ACP agent_message_chunk updates below.
         publish({ assistantText: boundedText(assistantText) })
@@ -707,16 +1313,22 @@ export function createOfficeAgentSession(dependencies: {
           })
         })
         finishCheckpoint()
+        automaticRecoveryAttempt = 0
+        if (recoveryTimer) clearTimeout(recoveryTimer)
+        recoveryTimer = undefined
         toolStartedAt.clear()
-        if (activeAssistantId) {
-          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
-          activeAssistantId = undefined
-        }
+        closeAssistantSegment()
         publish({
           busy: false,
           activity: '',
           status: result.cancelled ? 'cancelled' : 'done',
         })
+        if (!result.presentation && result.cancelled)
+          append({
+            id: eventId(),
+            kind: 'system',
+            text: dependencies.presentationText?.('cancelled') ?? 'cancelled',
+          })
       },
       onError: (error) => {
         const transient = [
@@ -757,6 +1369,28 @@ export function createOfficeAgentSession(dependencies: {
           })
         })
         activeAssistantId = undefined
+        const delay = AUTOMATIC_RECOVERY_DELAYS_MS[automaticRecoveryAttempt]
+        if (
+          !dependencies.runCheckpoint &&
+          AUTOMATIC_RECOVERY_ERRORS.has(safeError.code) &&
+          delay !== undefined &&
+          !disposed
+        ) {
+          automaticRecoveryAttempt += 1
+          recoveryTimer = setTimeout(() => {
+            recoveryTimer = undefined
+            startRun(RECOVERY_INSTRUCTION, undefined, undefined, false, '', true)
+          }, delay)
+          publish({
+            busy: true,
+            activity: 'Connection interrupted. Progress saved; recovering…',
+            status: 'working',
+            error: undefined,
+            errorMessage: undefined,
+            retryable: false,
+          })
+          return
+        }
         append({
           id: eventId(),
           kind: 'error',
@@ -849,7 +1483,7 @@ export function createOfficeAgentSession(dependencies: {
   })
 
   const unsubscribeProposals = proposals.subscribe(() => {
-    const pending = proposals.pending()
+    const pending = visibleProposal()
     if (pending) {
       appendPendingProposal()
       publish({ activity: 'Waiting for your approval' })
@@ -865,10 +1499,20 @@ export function createOfficeAgentSession(dependencies: {
     messages?: readonly AgentMessage[],
     resumedRunId?: string,
     pendingRead = false,
+    displayText?: string,
+    recovering = false,
   ) => {
     const value = instruction.trim()
     if (!value || harness.snapshot.busy || pendingStart || state.applying || disposed) return
-    diagnose((diagnostics) => diagnostics.startTrace())
+    if (!recovering) {
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      automaticRecoveryAttempt = 0
+      diagnose((diagnostics) => diagnostics.startTrace())
+    }
+    sessionEpoch += 1
+    observedTools.clear()
+    recordedToolFailures.clear()
     staleTools.clear()
     checkpointBeginFailed = false
     toolsStarted = false
@@ -876,13 +1520,14 @@ export function createOfficeAgentSession(dependencies: {
     resumingReadConversation = Boolean(messages)
     resumingPendingRead = pendingRead
     proposals.newTurn()
-    lastInstruction = value
+    if (!recovering) lastInstruction = value
     activeAssistantId = undefined
-    append({
-      id: eventId(),
-      kind: messages ? 'assistant' : 'user',
-      text: messages ? '从已保存的读取结果继续。' : boundedText(value),
-    })
+    if (displayText !== '')
+      append({
+        id: eventId(),
+        kind: messages ? 'assistant' : 'user',
+        text: messages ? '从已保存的读取结果继续。' : boundedText(displayText ?? value),
+      })
     publish({
       assistantText: '',
       activity: 'Thinking…',
@@ -894,7 +1539,8 @@ export function createOfficeAgentSession(dependencies: {
       recoveryAvailable: false,
     })
     if (!dependencies.runCheckpoint) {
-      harness.run(value)
+      if (recovering) harness.resume(value)
+      else harness.run(value)
       return
     }
     pendingStart = true
@@ -1009,6 +1655,15 @@ export function createOfficeAgentSession(dependencies: {
     send(instruction) {
       startRun(instruction)
     },
+    reviseDesignContract(designMd) {
+      startRun(
+        `Revise the active presentation DESIGN.md to exactly the contract below. Keep the existing page plan unless consistency requires a change. Call plan_deck with the revised style and do not edit slides in this turn.\n\n${designMd}`,
+        undefined,
+        undefined,
+        false,
+        '更新 DESIGN.md',
+      )
+    },
     stop() {
       if (disposed) return
       if (recoveryPending) {
@@ -1021,6 +1676,10 @@ export function createOfficeAgentSession(dependencies: {
         publish({ busy: false, activity: '', status: 'cancelled' })
         return
       }
+      const wasRecovering = recoveryTimer !== undefined
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      automaticRecoveryAttempt = 0
       const event = pendingProposalEvent()
       if (state.applying) {
         sessionEpoch += 1
@@ -1041,6 +1700,8 @@ export function createOfficeAgentSession(dependencies: {
         )
       }
       harness.stop()
+      if (wasRecovering)
+        publish({ busy: false, activity: '', status: 'cancelled', retryable: false })
     },
     async confirm(id) {
       if (disposed || state.applying || (harness.snapshot.busy && proposals.pending()?.id !== id))
@@ -1059,17 +1720,35 @@ export function createOfficeAgentSession(dependencies: {
         retryable: false,
       })
       try {
+        const decision = proposals.waitForDecision(id)
         await proposals.confirm(id)
         if (epoch !== sessionEpoch) return
-        if (event)
+        const outcome = await decision
+        const writePending =
+          outcome.status === 'applied_unverified' && outcome.safeCode === 'office_write_pending'
+        if (event && writePending)
+          replace(event.id, (item) =>
+            item.kind === 'proposal'
+              ? {
+                  ...item,
+                  state: 'uncertain',
+                  error:
+                    dependencies.presentationText?.('write_pending_quarantined') ??
+                    'Write may still be running; further edits are frozen pending reconciliation or reload.',
+                }
+              : item,
+          )
+        else if (event)
           replace(event.id, (item) =>
             item.kind === 'proposal' ? { ...item, state: 'applied' } : item,
           )
         publish({
-          activity:
-            event?.proposal &&
-            'impact' in event.proposal &&
-            event.proposal.impact.host === 'local_team'
+          activity: writePending
+            ? (dependencies.presentationText?.('write_pending_quarantined') ??
+              'Write may still be running; further edits are frozen pending reconciliation or reload.')
+            : event?.proposal &&
+                'impact' in event.proposal &&
+                event.proposal.impact.host === 'local_team'
               ? '团队记录已保存'
               : 'Document updated',
           error: undefined,
@@ -1110,6 +1789,9 @@ export function createOfficeAgentSession(dependencies: {
     },
     newTask() {
       if (disposed) return
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      automaticRecoveryAttempt = 0
       sessionEpoch += 1
       finishCheckpoint()
       harness.reset()
@@ -1127,12 +1809,39 @@ export function createOfficeAgentSession(dependencies: {
         disposed
       )
         return
-      const instruction = lastInstruction
       if (dependencies.runCheckpoint) void resumeRecovery(false)
-      else startRun(instruction)
+      else {
+        automaticRecoveryAttempt = 0
+        startRun(RECOVERY_INSTRUCTION, undefined, undefined, false, '', true)
+      }
     },
     async resumeInterrupted() {
       await resumeRecovery(true)
+    },
+    answerQuestionnaire(answers) {
+      const resolve = clarificationResolve
+      if (!resolve) return
+      clarificationResolve = undefined
+      questionnaireAnsweredPendingPlan = true
+      publish({ questionnaire: undefined, activity: '继续规划演示文稿…' })
+      resolve({
+        output: `User questionnaire answers:\n${boundedText(answers)}\nContinue with plan_deck, research, slide creation, screenshots, and verify_slides now.`,
+        mutated: false,
+        summary: 'Collected questionnaire answers',
+      })
+    },
+    skipQuestionnaire() {
+      const resolve = clarificationResolve
+      if (!resolve) return
+      clarificationResolve = undefined
+      questionnaireAnsweredPendingPlan = true
+      publish({ questionnaire: undefined, activity: '继续规划演示文稿…' })
+      resolve({
+        output:
+          'The user delegated these choices. Decide professionally and continue with plan_deck now.',
+        mutated: false,
+        summary: 'Questionnaire choices delegated',
+      })
     },
     logout() {
       if (disposed) return
@@ -1157,6 +1866,10 @@ export function createOfficeAgentSession(dependencies: {
     dispose() {
       if (disposed) return
       disposed = true
+      if (recoveryTimer) clearTimeout(recoveryTimer)
+      recoveryTimer = undefined
+      dependencies.transport.setToolActivityHandler?.(undefined)
+      dependencies.remoteTools?.setToolHandler?.(undefined)
       sessionEpoch += 1
       unsubscribeAcp()
       unsubscribeProposals()

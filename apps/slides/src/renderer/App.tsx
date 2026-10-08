@@ -88,6 +88,12 @@ import * as tableActions from './table-actions'
 import * as styleActions from './style-actions'
 import { handleGlobalKeydown } from './keyboard-actions'
 import { buildCtxItems } from './context-menu-items'
+import {
+  flushNotesDraft,
+  prepareSpeakerNotesDraft,
+  type NotesDraft,
+  type NotesFlushReceipt,
+} from './notes-draft'
 
 const _IS_MAC = navigator.platform.toLowerCase().includes('mac')
 
@@ -412,7 +418,11 @@ export function App() {
   const [showNotes, setShowNotes] = useState(false)
   const [notesText, setNotesText] = useState('')
   /** Unsaved notes draft (flushed before page switch/save) */
-  const notesDraftRef = useRef<{ index: number; text: string } | null>(null)
+  const notesDraftRef = useRef<NotesDraft | null>(null)
+  const notesDraftVersionRef = useRef(0)
+  const notesContextToken = useMemo(() => ({}), [slides, current, path])
+  const notesContextTokenRef = useRef<unknown>(notesContextToken)
+  notesContextTokenRef.current = notesContextToken
   /** Notes pane height (px): default 118, drag-resizable */
   const [notesHeight, setNotesHeight] = useState(118)
   const notesDragRef = useRef<{ startY: number; startH: number } | null>(null)
@@ -471,13 +481,23 @@ export function App() {
   }, [slides])
 
   /** Write the notes draft back to the main process (called on page switch / blur / before save). */
-  const flushNotes = useCallback(async () => {
-    const pending = notesDraftRef.current
-    if (!pending) return
-    notesDraftRef.current = null
-    const ok = await window.slidesApi.setNotes({ slideIndex: pending.index, text: pending.text })
-    if (ok) setDirty(true)
-  }, [])
+  const flushNotes = useCallback(
+    async (expected?: NotesDraft | null): Promise<NotesFlushReceipt> => {
+      return await flushNotesDraft(
+        notesDraftRef,
+        async (pending) => {
+          const ok = await window.slidesApi.setNotes({
+            slideIndex: pending.index,
+            text: pending.text,
+          })
+          if (ok) setDirty(true)
+          return ok
+        },
+        expected === undefined ? notesDraftRef.current : expected,
+      )
+    },
+    [],
+  )
 
   // Uncapped proportional fit ratio from the stage container's measured size
   // (fall back to a window estimate before mount)
@@ -1342,7 +1362,8 @@ export function App() {
   const onNotesChange = useCallback(
     (text: string) => {
       setNotesText(text)
-      notesDraftRef.current = { index: current, text }
+      notesDraftVersionRef.current += 1
+      notesDraftRef.current = { index: current, text, version: notesDraftVersionRef.current }
     },
     [current],
   )
@@ -3239,6 +3260,21 @@ export function App() {
                   setPath(p)
                   setDirty(false)
                 }}
+                onPrepareSpeakerNotesWrite={() =>
+                  prepareSpeakerNotesDraft({
+                    draft: notesDraftRef,
+                    currentVersion: () => notesDraftVersionRef.current,
+                    contextKey: () => notesContextTokenRef.current,
+                    flush: (expected) => flushNotes(expected),
+                  })
+                }
+                onSpeakerNotesApplied={(slideIndex, text, expectedDraftVersion) => {
+                  if (slideIndex !== current) return
+                  if (notesDraftVersionRef.current !== expectedDraftVersion) return
+                  notesDraftRef.current = null
+                  setNotesText(text)
+                }}
+                onAuthoritativeReloadRequired={() => window.location.reload()}
                 currentFilePath={path}
               />
             ) : (

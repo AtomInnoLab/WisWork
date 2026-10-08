@@ -1,15 +1,24 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+import { boundedScreenshot } from './bounded-screenshot'
 import {
   composeSkills,
+  extractPresentationDesignContract,
+  extractPresentationDesignDocument,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
+  renderPresentationDesignContract,
+  revisePresentationDesignContract,
   type AgentImage,
   type ToolDisplay,
 } from '@wiswork/agent-core'
-import type { AgentHarness } from '@wiswork/agent-harness'
+import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
+import { upsertToolActivity } from '@wiswork/agent-runtime'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
+import { executePreparedTextFamilyTransaction } from './presentation-text-transactions'
+import { executePreparedGeometryFamilyTransaction } from './presentation-geometry-transactions'
+import { executePreparedBackgroundFamilyTransaction } from './presentation-background-transactions'
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
@@ -22,21 +31,29 @@ import {
   stopSlidesHostRun,
   useAgentControllerCleanup,
 } from './agent-controller'
+import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './enhanced-error-copy'
 import { renderSlidesToPngBase64 } from '../export-render'
+import { presentationTimelineBlockOrder, shouldShowStreamingProgress } from './streaming-progress'
+import { presentationDesignLifecycle } from './presentation-design-ui'
 import {
+  applyQcGeometryFixes,
+  buildVisualQcContext,
   captureCurrentQcShot,
   isQcEnabled,
   qcSlidePage,
   QC_MAX_PAGES,
-  runQcInHistoryBatch,
+  toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
-import { Markdown } from '@wiswork/ui'
+import { IconEnter, IconPaperclip, Markdown, PresentationActivityGroup } from '@wiswork/ui'
+import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
+import { presentationVerificationFlags } from '@wiswork/presentation-verification'
+import { translatePresentationVerification, mutationExpiryStrings } from '@wiswork/i18n'
+import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
+import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
-import sendEnterOn from '../assets/send-enter-on.png'
-import sendEnterOff from '../assets/send-enter-off.png'
+declare const __WISWORK_SLIDES_ACCEPTANCE_E2E__: boolean
 import sendStop from '../assets/send-stop.png'
-import attachIcon from '../assets/attach-icon.png'
 import filePdfIcon from '../assets/file-pdf.png'
 import fileWordIcon from '../assets/file-word.png'
 import fileExcelIcon from '../assets/file-excel.png'
@@ -47,9 +64,20 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import type { SpeakerNotesDraftPreparation } from '../notes-draft'
 import { createSlidesChatBindingCoordinator } from './chat-binding'
+import type { SelectionScope } from './edit-queue'
+import { EditQueueCard } from './EditQueueCard'
+import {
+  EditQueueCapacityError,
+  EDIT_QUEUE_DEFAULT_CAPACITY,
+  SelectionEditQueue,
+  type EditQueueSnapshot,
+  type SelectionEditReceipt,
+} from './edit-queue'
 
 interface ToolActivity {
+  callId?: string
   name: string
   summary: string
   /** still executing: rendered as a spinner chip, replaced in place when the tool finishes */
@@ -220,6 +248,9 @@ interface ChatEntry {
   snapshotId?: number
   /** attachments consumed from the composer by this user message (read-only echo chips) */
   attachments?: AttachmentMeta[]
+  qualityReceipts?: readonly PresentationQualityReceipt[]
+  /** In-memory correlation only; never contains durable scope ids/content. */
+  queueTaskId?: string
 }
 
 /** Empty deck → generation starters; deck with content → polish starters */
@@ -260,8 +291,14 @@ interface AiPanelProps {
   onUndo?: () => void
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
+  /** Mirror canonical notes commits into the notes editor; this callback never writes the deck. */
+  onPrepareSpeakerNotesWrite?: (slideIndex: number) => Promise<SpeakerNotesDraftPreparation>
+  onSpeakerNotesApplied?: (slideIndex: number, text: string, expectedDraftVersion: number) => void
+  onAuthoritativeReloadRequired?: () => void
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
+  /** Structured, bounded quality timeline hook; receipts are separate from mutation receipts. */
+  onQualityReceipt?: (receipt: PresentationQualityReceipt) => void
 }
 
 /** Some locales already end the label with an ellipsis — normalize to exactly one. */
@@ -338,12 +375,29 @@ export function AiPanel({
   onExpand,
   onCollapse,
   onPathChange,
+  onSpeakerNotesApplied,
+  onPrepareSpeakerNotesWrite,
+  onAuthoritativeReloadRequired,
+  onQualityReceipt,
   currentFilePath,
 }: AiPanelProps) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [selectionScopeEnabled, setSelectionScopeEnabled] = useState(false)
+  const editQueueRef = useRef<SelectionEditQueue | null>(null)
+  if (!editQueueRef.current) editQueueRef.current = new SelectionEditQueue()
+  const [queueSnapshot, setQueueSnapshot] = useState<EditQueueSnapshot>(() =>
+    editQueueRef.current!.snapshot(),
+  )
+  const [queuedScope, setQueuedScope] = useState<SelectionScope | null>(null)
+  const lifecycleEpochRef = useRef(0)
+  const pendingCapturesRef = useRef(new Map<string, number>())
+  const captureTailRef = useRef<Promise<void>>(Promise.resolve())
+  const persistedQueueTombstonesRef = useRef(new Set<string>())
+  const mountedRef = useRef(true)
   const [chat, setChat] = useState<ChatEntry[]>([])
+  const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
   const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
@@ -441,16 +495,58 @@ export function AiPanel({
   currentRef.current = current
   const selectedRef = useRef(selectedIds)
   selectedRef.current = selectedIds
+  const activeSelectionScopeRef = useRef<SelectionScope | undefined>(undefined)
+  const activeQueueRunRef = useRef<
+    | {
+        taskId: string
+        invocationId: string
+        resolve: (receipt: SelectionEditReceipt) => void
+        reject: (error: unknown) => void
+        status: SelectionEditReceipt['status']
+        transactionId?: string
+        markWriteStarted: () => void
+      }
+    | undefined
+  >(undefined)
+  const activeQueueTaskIdRef = useRef<string | undefined>(undefined)
+  useEffect(
+    () => editQueueRef.current!.subscribe(() => setQueueSnapshot(editQueueRef.current!.snapshot())),
+    [],
+  )
+  const selectionIdentityRef = useRef(`${current}:${selectedIds.join('\u0000')}`)
+  useEffect(() => {
+    const identity = `${current}:${selectedIds.join('\u0000')}`
+    if (selectionIdentityRef.current !== identity) {
+      lifecycleEpochRef.current++
+      pendingCapturesRef.current.clear()
+      captureTailRef.current = Promise.resolve()
+      editQueueRef.current?.cancelAll('selection changed')
+    }
+    selectionIdentityRef.current = identity
+  }, [current, selectedIds])
+  useEffect(() => {
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
+    editQueueRef.current?.cancelAll('document changed')
+  }, [currentFilePath])
   const applySlideRef = useRef(applySlide)
   applySlideRef.current = applySlide
   const applyDeckRef = useRef(applyDeck)
   applyDeckRef.current = applyDeck
+  const onSpeakerNotesAppliedRef = useRef(onSpeakerNotesApplied)
+  onSpeakerNotesAppliedRef.current = onSpeakerNotesApplied
+  const onPrepareSpeakerNotesWriteRef = useRef(onPrepareSpeakerNotesWrite)
+  onPrepareSpeakerNotesWriteRef.current = onPrepareSpeakerNotesWrite
+  const onAuthoritativeReloadRequiredRef = useRef(onAuthoritativeReloadRequired)
+  onAuthoritativeReloadRequiredRef.current = onAuthoritativeReloadRequired
   const onPathChangeRef = useRef(onPathChange)
   onPathChangeRef.current = onPathChange
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const imagesRef = useRef(images)
   imagesRef.current = images
+
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   /** attachments consumed by the most recent send — retry resends the same set */
@@ -516,6 +612,9 @@ export function AiPanel({
       onReset: () => {
         setChat([])
         setHistoricChat([])
+        setQualityTimeline([])
+        qualityReceiptsRef.current = []
+        qcTransactionByPageRef.current.clear()
       },
     })
   }
@@ -573,10 +672,71 @@ export function AiPanel({
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
   const qcRunningRef = useRef(false)
+  const qualityReceiptsRef = useRef<PresentationQualityReceipt[]>([])
+  const qcTransactionByPageRef = useRef(new Map<number, string>())
+  const presentationDesignContextRef = useRef<{
+    designMd: string
+    pages: Array<{ visual: string; acceptance: string[]; density: string }>
+  } | null>(null)
+  const [designEditorOpen, setDesignEditorOpen] = useState(false)
+  const [designEditorEditable, setDesignEditorEditable] = useState(false)
+  const [designEditorEditing, setDesignEditorEditing] = useState(false)
+  const [designDraft, setDesignDraft] = useState('# DESIGN.md\n\n')
+  const [designNotice, setDesignNotice] = useState<string | null>(null)
+  const refreshDesignSidecar = async () => {
+    const result = await (window.slidesApi?.getDesignSidecar?.() ??
+      Promise.resolve<{ ok: boolean; designMd?: string }>({ ok: true }))
+    if (!result.designMd) return
+    presentationDesignContextRef.current = { designMd: result.designMd, pages: [] }
+    setDesignDraft(result.designMd)
+  }
+  useEffect(() => {
+    let cancelled = false
+    qcAbortRef.current?.abort()
+    qcPagesRef.current = []
+    presentationDesignContextRef.current = null
+    void (
+      window.slidesApi?.getDesignSidecar?.() ??
+      Promise.resolve<{ ok: boolean; designMd?: string }>({ ok: true })
+    )
+      .then((result) => {
+        if (cancelled || !result.designMd) return
+        presentationDesignContextRef.current = { designMd: result.designMd, pages: [] }
+        setDesignDraft(result.designMd)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [currentFilePath])
+  useEffect(
+    () =>
+      window.slidesApi?.onDesignSidecarChanged?.(() => {
+        void refreshDesignSidecar()
+      }),
+    [],
+  )
+  const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
+    qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
+    setQualityTimeline((previous) =>
+      [
+        ...previous.filter(
+          (item) =>
+            item.transactionId !== receipt.transactionId || item.slideId !== receipt.slideId,
+        ),
+        receipt,
+      ].slice(-100),
+    )
+    onQualityReceipt?.(receipt)
+  }
   /** Latest runQcPass closure; the loop's onDone (built once) calls through this ref */
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
   const accessRef = useRef<DeckAccess | null>(null)
+  /** Main-agent visual tool calls through the latest renderer without rebuilding the harness. */
+  const captureSlideShotRef = useRef<(pageIndex: number) => Promise<AgentImage | null>>(
+    async () => null,
+  )
   /** Wall-clock start of the current run, drives the elapsed badge */
   const runStartedAtRef = useRef(0)
   const historyBatchActiveRef = useRef(false)
@@ -590,11 +750,23 @@ export function AiPanel({
   ) => {
     setChat((prev) => {
       const next = [...prev]
-      const last = next[next.length - 1]
+      const activeId = activeQueueTaskIdRef.current
+      const index = activeId
+        ? next.findIndex((entry) => entry.role === 'assistant' && entry.queueTaskId === activeId)
+        : next.length - 1
+      const last = next[index]
       if (!last || last.role !== 'assistant') return prev
-      next[next.length - 1] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
+      next[index] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
       return next
     })
+  }
+
+  const queuedAssistantIndex = (entries: readonly ChatEntry[], taskId: string): number => {
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index]
+      if (entry?.role === 'assistant' && entry.queueTaskId === taskId) return index
+    }
+    return -1
   }
 
   const finishHistoryBatch = async (publishSnapshot = true) => {
@@ -737,12 +909,301 @@ export function AiPanel({
     ): Promise<LlmResult> =>
       runLlmAttempt(settingsRef.current, system, user, timeoutMs, signal, maxTokens)
 
+    const taskImages = new Map<string, { taskId: string; image: AgentImage }>()
+    const taskRenderBundles = new Map<
+      string,
+      NonNullable<Awaited<ReturnType<typeof window.slidesApi.getRenderSlides>>>
+    >()
+
     const access: DeckAccess = {
+      presentationTelemetry: (event) =>
+        window.dispatchEvent(new CustomEvent('wiswork:presentation-telemetry', { detail: event })),
+      onHostCorrection: () => {
+        if (activeRunTokenRef.current !== launchTokenRef.current) return
+        setChat((previous) => [
+          ...previous,
+          { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+        ])
+      },
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      getPresentationDesignDocument: () => presentationDesignContextRef.current?.designMd,
+      setPresentationDesignContext: (context) => {
+        presentationDesignContextRef.current = context
+        setDesignDraft(context.designMd)
+      },
+      refreshAuthoritativeState: async (signal) => {
+        signal?.throwIfAborted()
+        const runToken = activeRunTokenRef.current
+        const before = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!before) return false
+        const refreshed = await window.slidesApi.getRenderSlides()
+        signal?.throwIfAborted()
+        if (
+          !refreshed ||
+          activeRunTokenRef.current !== runToken ||
+          activeRunTokenRef.current !== launchTokenRef.current ||
+          refreshed.documentToken !== before.documentToken ||
+          refreshed.sessionToken !== before.sessionToken
+        )
+          return false
+        // Update synchronous refs as well as React; the next tool must not read
+        // the preceding render while the state update is still queued.
+        slidesRef.current = refreshed.slides
+        applyDeckRef.current(refreshed.slides, currentRef.current)
+        return true
+      },
+      captureSlideScreenshot: (slideIndex) => captureSlideShotRef.current(slideIndex),
+      reviewPresentationScreenshot: async (slideIndex, screenshot, signal) => {
+        const design = presentationDesignContextRef.current
+        const pageDesign = design?.pages[slideIndex]
+        const designContext = design
+          ? `${design.designMd.slice(0, 3_000)}\n\nCurrent page:\n${JSON.stringify(pageDesign ?? {})}`
+          : undefined
+        const result = await qcSlidePage({
+          access,
+          transport: createElectronTransport(() => settingsRef.current, {
+            maxSerializedRequestBytes: 2 * 1024 * 1024,
+          }),
+          pageIndex: slideIndex,
+          screenshot,
+          designContext,
+          systemSuffix: aiLangDirective,
+          signal,
+        })
+        return result.ok && result.postIssues === 0 && result.reply.trim().toUpperCase() === 'OK'
+      },
+      getSelectionScope: () => activeSelectionScopeRef.current,
+      getAcceptanceAuthorityLease: async () => {
+        const lease = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!lease) throw new Error('Authoritative acceptance lease is unavailable')
+        return lease
+      },
+      verifyAcceptanceTextProof: (request) => window.slidesApi.verifyAcceptanceTextProof(request),
+      inspectAcceptanceAuthority: async (request) => {
+        const snapshot = await window.slidesApi.inspectAcceptanceAuthority(request)
+        if (!snapshot) throw new Error('Authoritative acceptance inspection is unavailable')
+        return snapshot
+      },
+      taskReviewAdapter: {
+        refresh: async (lineage, signal) => {
+          signal?.throwIfAborted()
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (!refreshed) throw new Error('authoritative_refresh_unavailable')
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          taskRenderBundles.set(lineage.taskId, refreshed)
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          applyDeckRef.current(refreshed.slides, currentRef.current)
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          const historyId = await finishHistoryBatch(false)
+          return {
+            documentToken: refreshed.documentToken,
+            sessionToken: refreshed.sessionToken,
+            revision: refreshed.revision,
+            leaseToken: refreshed.leaseToken,
+            ...lineage,
+            ...(typeof historyId === 'number' ? { rollbackId: `history-${historyId}` } : {}),
+          }
+        },
+        verifyDeterministic: async (contract, authority, plannedMutationTargets) => {
+          const textChecks = contract.checks.flatMap((check) =>
+            check.kind === 'element_property' &&
+            check.property === 'text' &&
+            check.roleOrTarget.kind === 'target' &&
+            typeof check.expected === 'string'
+              ? [
+                  {
+                    checkId: check.id,
+                    targetToken: check.roleOrTarget.targetToken,
+                    expectedText: check.expected,
+                  },
+                ]
+              : [],
+          )
+          const snapshot = await window.slidesApi.inspectAcceptanceAuthority({
+            affectedSlides: contract.affectedSlides,
+            referenceSlides: contract.referenceSlides,
+            expectedDocumentToken: authority.documentToken,
+            expectedSessionToken: authority.sessionToken,
+            expectedRevision: authority.revision,
+            leaseToken: authority.leaseToken,
+            baseRevision: authority.baseRevision,
+            mutationReceiptIds: authority.mutationReceiptIds,
+            ...(textChecks.length ? { textChecks } : {}),
+          })
+          if (!snapshot) throw new Error('acceptance_inspection_unavailable')
+          const mutatedTargetTokens = snapshot.mutatedTargetTokens ?? []
+          const {
+            mutatedTargetTokens: _targets,
+            sourceTargetTokens: _sources,
+            ...authoritySnapshot
+          } = snapshot
+          const verified = await verifyAndBrandSlidesAcceptanceAuthority(
+            contract,
+            authoritySnapshot,
+            (request) => window.slidesApi.verifyAcceptanceTextProof(request),
+          )
+          return verifySlidesAcceptance(contract, verified, {
+            mode: 'postwrite',
+            mutatedTargetTokens,
+            plannedMutationTargets,
+          })
+        },
+        capture: async ({ slide, role, authority, signal }) => {
+          signal?.throwIfAborted()
+          const taskRenderBundle = taskRenderBundles.get(authority.taskId ?? '')
+          const rendered = taskRenderBundle?.slides[slide - 1]
+          if (
+            !rendered ||
+            taskRenderBundle?.documentToken !== authority.documentToken ||
+            taskRenderBundle.sessionToken !== authority.sessionToken ||
+            taskRenderBundle.revision !== authority.revision ||
+            taskRenderBundle.leaseToken !== authority.leaseToken
+          )
+            return null
+          const [png] = await renderSlidesToPngBase64([rendered], imagesRef.current, 1)
+          const image: AgentImage | null = png ? { base64: png, mime: 'image/png' } : null
+          if (!image) return null
+          const after = await window.slidesApi.inspectAcceptanceAuthority({
+            affectedSlides: [slide],
+            referenceSlides: [],
+            expectedDocumentToken: authority.documentToken,
+            expectedSessionToken: authority.sessionToken,
+            expectedRevision: authority.revision,
+            leaseToken: authority.leaseToken,
+            baseRevision: authority.baseRevision,
+            mutationReceiptIds: authority.mutationReceiptIds,
+          })
+          if (
+            !after ||
+            after.documentToken !== authority.documentToken ||
+            after.sessionToken !== authority.sessionToken ||
+            after.revision !== authority.revision ||
+            after.leaseToken !== authority.leaseToken
+          )
+            return null
+          const bytes = Math.ceil((image.base64.length * 3) / 4)
+          const mediaToken = `media-${crypto.randomUUID().replaceAll('-', '')}`
+          taskImages.set(mediaToken, { taskId: authority.taskId ?? '', image })
+          return {
+            slide,
+            role,
+            mediaToken,
+            bytes,
+            revision: authority.revision,
+            leaseToken: authority.leaseToken,
+            sessionToken: authority.sessionToken,
+          }
+        },
+        review: async (facts, signal) => {
+          const images = facts.screenshots.map(
+            ({ mediaToken }) => taskImages.get(mediaToken)?.image,
+          )
+          if (images.some((image) => !image)) throw new Error('screenshot_unavailable')
+          try {
+            return await reviewSlidesRendering({
+              facts,
+              images: images as AgentImage[],
+              transport: createElectronTransport(() => settingsRef.current),
+              signal,
+            })
+          } finally {
+            for (const { mediaToken } of facts.screenshots) taskImages.delete(mediaToken)
+          }
+        },
+        correct: async () => {
+          throw new Error('unsupported_correction')
+        },
+        isCurrent: (authority) =>
+          authority.sessionToken.length > 0 && activeRunTokenRef.current === launchTokenRef.current,
+        cleanup: (taskId) => {
+          for (const [mediaToken, stored] of taskImages)
+            if (stored.taskId === taskId) taskImages.delete(mediaToken)
+          taskRenderBundles.delete(taskId)
+        },
+      },
+      onTaskReviewComplete: (receipt) => {
+        const historyId = receipt.rollbackId?.match(/^history-([1-9][0-9]*)$/)?.[1]
+        if (historyId) {
+          runSnapshotIdRef.current = Number(historyId)
+          patchLastAssistant({ snapshotId: Number(historyId) })
+        }
+        if (isQcEnabled())
+          qcPagesRef.current = [
+            ...new Set([
+              ...qcPagesRef.current,
+              ...receipt.affectedSlides.map((slide) => slide - 1),
+            ]),
+          ]
+      },
+      beginTaskCorrectionHistory: async () => {
+        if (historyBatchActiveRef.current) return false
+        const opened = await window.slidesApi.beginHistoryBatch()
+        if (opened) historyBatchActiveRef.current = true
+        return opened
+      },
+      finishTaskCorrectionHistory: async () => {
+        const id = await finishHistoryBatch(false)
+        return typeof id === 'number' ? `history-${id}` : undefined
+      },
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
+      executePresentationOperation: async (request, signal) => {
+        const refresh = async () => {
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (!refreshed) return false
+          applyDeckRef.current(refreshed.slides, currentRef.current)
+          return true
+        }
+        const execution = await ('backgrounds' in request
+          ? executePreparedBackgroundFamilyTransaction(
+              window.slidesApi,
+              request,
+              signal,
+              refresh,
+              activeSelectionScopeRef.current,
+              () => activeQueueRunRef.current?.markWriteStarted(),
+            )
+          : 'operations' in request
+            ? executePreparedGeometryFamilyTransaction(
+                window.slidesApi,
+                request,
+                signal,
+                refresh,
+                activeSelectionScopeRef.current,
+                () => activeQueueRunRef.current?.markWriteStarted(),
+              )
+            : executePreparedTextFamilyTransaction(
+                window.slidesApi,
+                request,
+                signal,
+                refresh,
+                activeSelectionScopeRef.current,
+                () => activeQueueRunRef.current?.markWriteStarted(),
+              ))
+        if (execution.authoritativeState === 'reload_required')
+          onAuthoritativeReloadRequiredRef.current?.()
+        const receipt = execution.receipt
+        if (activeSelectionScopeRef.current && activeQueueRunRef.current) {
+          activeQueueRunRef.current.transactionId = receipt.transactionId
+          activeQueueRunRef.current.status =
+            receipt.status === 'uncertain'
+              ? 'uncertain'
+              : receipt.status === 'conflict'
+                ? 'conflict'
+                : receipt.status === 'applied'
+                  ? 'applied'
+                  : activeQueueRunRef.current.status
+        }
+        return execution
+      },
+      prepareSpeakerNotesWrite: (slideIndex) =>
+        onPrepareSpeakerNotesWriteRef.current?.(slideIndex) ??
+        Promise.resolve({ ready: true, expectedDraftVersion: 0 }),
+      applySpeakerNotes: (slideIndex, text, expectedDraftVersion) =>
+        onSpeakerNotesAppliedRef.current?.(slideIndex, text, expectedDraftVersion),
       askClarification: (questions: ClarifyQuestion[]) => {
         return new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
           clarifyResolverRef.current = resolve
@@ -884,147 +1345,463 @@ export function AiPanel({
           .map((a) => a.name),
     }
     accessRef.current = access
-    loopRef.current = createAgentController({
-      transport: createElectronTransport(() => settingsRef.current),
-      systemSuffix: aiLangDirective,
-      skill: composeSkills('slides+files', '', [
-        createSlidesSkill(access),
-        createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
-      ]),
-      events: {
-        onText: (text) => patchLastAssistant({ text }),
-        onToolStart: (call) => {
-          // Live "running" chip: replaced in place by onToolExecuted
-          const activity: ToolActivity = {
-            name: call.name,
-            summary: call.name.replace(/[_-]+/g, ' '),
-            running: true,
-          }
-          patchLastAssistant((last) => ({ tools: [...(last.tools ?? []), activity] }))
-        },
-        onToolExecuted: ({ call, execution }) => {
-          const activity: ToolActivity = {
-            name: call.name,
-            summary: execution.summary,
-            isError: execution.isError,
-            output: execution.output ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS) : undefined,
-            // Side channel: display comes from tools, not into LLM context, UI only
-            display: execution.display,
-          }
-          lastTurnToolsRef.current.push(activity)
-          if (!execution.display) {
-            runToolsRef.current.push({
+    if (__WISWORK_SLIDES_ACCEPTANCE_E2E__) {
+      const automationWindow = window as typeof window & {
+        __wisworkSlidesRunAcceptanceAgent?: () => Promise<{
+          text: string
+          status?: string
+          passedCheckIds?: string[]
+          mutationReceiptIds?: string[]
+          documentToken: string
+          sessionToken: string
+          revision: string
+          leaseToken: string
+          pngs: string[]
+        }>
+      }
+      automationWindow.__wisworkSlidesRunAcceptanceAgent = async () => {
+        const initial = slidesRef.current
+        const source = (slideNumber: number, role: string) => {
+          const node = initial[slideNumber - 1]?.nodes.find((candidate) =>
+            JSON.stringify(candidate).includes(`${role}-${slideNumber}`),
+          )
+          if (!node) throw new Error(`missing fixture target: ${role}-${slideNumber}`)
+          return node.sourceId
+        }
+        const calls = [6, 7, 8].flatMap((slideNumber) => [
+          ...(
+            [
+              ['title', '#2457A7'],
+              ['body', '#172033'],
+              ['emphasis', '#18A0A6'],
+            ] as const
+          ).map(([role, color]) => ({
+            id: `golden-${slideNumber}-${role}`,
+            name: 'set_element_style',
+            input: { slideIndex: slideNumber - 1, sourceId: source(slideNumber, role), color },
+          })),
+          ...(slideNumber === 6
+            ? []
+            : [
+                {
+                  id: `golden-${slideNumber}-geometry`,
+                  name: 'set_element_transform',
+                  input: {
+                    slideIndex: slideNumber - 1,
+                    sourceId: source(slideNumber, 'title'),
+                    x: 96,
+                    y: 64,
+                    w: 1088,
+                    h: 72,
+                  },
+                },
+              ]),
+        ])
+        let mainTurn = 0
+        const transport = {
+          stream: (
+            _request: unknown,
+            callbacks: Parameters<ReturnType<typeof createElectronTransport>['stream']>[1],
+          ) => {
+            queueMicrotask(() => {
+              if (mainTurn++ === 0) for (const call of calls) callbacks.onToolCall(call)
+              else callbacks.onDelta('done')
+              callbacks.onDone()
+            })
+            return { cancel() {} }
+          },
+        }
+        const reviewerTransport = {
+          stream: (
+            _request: unknown,
+            callbacks: Parameters<ReturnType<typeof createElectronTransport>['stream']>[1],
+          ) => {
+            queueMicrotask(() => {
+              callbacks.onDelta(
+                JSON.stringify({
+                  status: 'pass',
+                  failedCheckIds: [],
+                  observations: [],
+                  fixIntents: [],
+                }),
+              )
+              callbacks.onDone()
+            })
+            return { cancel() {} }
+          },
+        }
+        const automatedAccess: DeckAccess = {
+          ...access,
+          taskReviewAdapter: access.taskReviewAdapter && {
+            ...access.taskReviewAdapter,
+            review: async (facts, signal) => {
+              const reviewImages = facts.screenshots.map(
+                ({ mediaToken }) => taskImages.get(mediaToken)?.image,
+              )
+              if (reviewImages.some((image) => !image)) throw new Error('screenshot_unavailable')
+              return reviewSlidesRendering({
+                facts,
+                images: reviewImages as AgentImage[],
+                transport: reviewerTransport,
+                signal,
+              })
+            },
+          },
+        }
+        let enrollmentFailure: string | undefined
+        let enrollmentKind: string | undefined
+        const automatedSkill = createSlidesSkill(automatedAccess, {
+          planning: true,
+          verifiedCompletion: true,
+          visualReview: true,
+          autoCorrection: false,
+        })
+        const automatedEnroll = automatedSkill.presentation?.enroll
+        if (!automatedSkill.presentation || !automatedEnroll)
+          throw new Error('acceptance enrollment harness unavailable')
+        const diagnosticSkill = {
+          ...automatedSkill,
+          presentation: {
+            ...automatedSkill.presentation,
+            enroll: async (...args: Parameters<typeof automatedEnroll>) => {
+              try {
+                const enrolled = await automatedEnroll(...args)
+                enrollmentKind = enrolled.kind
+                return enrolled
+              } catch (error) {
+                enrollmentFailure = error instanceof Error ? error.message : 'unknown_error'
+                throw error
+              }
+            },
+          },
+        }
+        return new Promise((resolve, reject) => {
+          let receipt:
+            import('@wiswork/presentation-verification').PresentationCompletionReceipt | undefined
+          const harness = createAgentHarness({
+            transport,
+            maxTurns: 3,
+            skill: diagnosticSkill,
+            events: {
+              onPresentationReceipt: ({ receipt: value }) => {
+                receipt = value
+                return translatePresentationVerification(lang, value.status)
+              },
+              onDone: ({ text }) => {
+                harness.dispose()
+                setChat((previous) => [...previous, { role: 'assistant', text }])
+                void (async () => {
+                  if (!receipt)
+                    throw new Error(
+                      `missing_presentation_receipt:${enrollmentKind ?? 'not_enrolled'}`,
+                    )
+                  const before = await window.slidesApi.getRenderSlides()
+                  if (!before) throw new Error('authoritative_refresh_unavailable')
+                  const pngs = await renderSlidesToPngBase64(
+                    [6, 7, 8, 6].map((slide) => before.slides[slide - 1]!),
+                    imagesRef.current,
+                    1,
+                  )
+                  const after = await window.slidesApi.inspectAcceptanceAuthority({
+                    affectedSlides: [6, 7, 8],
+                    referenceSlides: [6],
+                    expectedDocumentToken: before.documentToken,
+                    expectedSessionToken: before.sessionToken,
+                    expectedRevision: before.revision,
+                    leaseToken: before.leaseToken,
+                  })
+                  if (
+                    !after ||
+                    after.documentToken !== before.documentToken ||
+                    after.sessionToken !== before.sessionToken ||
+                    after.revision !== before.revision ||
+                    after.leaseToken !== before.leaseToken
+                  )
+                    throw new Error('stale_authority')
+                  resolve({
+                    text,
+                    documentToken: before.documentToken,
+                    sessionToken: before.sessionToken,
+                    revision: before.revision,
+                    leaseToken: before.leaseToken,
+                    pngs,
+                    ...(receipt
+                      ? {
+                          status: receipt.status,
+                          passedCheckIds: receipt.passedCheckIds,
+                          mutationReceiptIds: receipt.mutationReceiptIds,
+                        }
+                      : {}),
+                  })
+                })().catch(reject)
+              },
+              onError: (error) => {
+                harness.dispose()
+                reject(new Error(enrollmentFailure ? `${error}:${enrollmentFailure}` : error))
+              },
+            },
+          })
+          if (!harness.run('Apply the bounded presentation consistency edits.'))
+            reject(new Error('agent_run_rejected'))
+        })
+      }
+    }
+    loopRef.current = createAgentController(
+      {
+        transport: createElectronTransport(() => settingsRef.current),
+        systemSuffix: aiLangDirective,
+        skill: composeSkills('slides+files', '', [
+          createSlidesSkill(
+            access,
+            presentationVerificationFlags(import.meta.env, 'VITE_WISWORK_PRESENTATION_'),
+          ),
+          createFilesSkill(availableAttachments, (path) =>
+            readAttachmentPathsRef.current.add(path),
+          ),
+        ]),
+        events: {
+          onPresentationClarify: () =>
+            setChat((previous) => [
+              ...previous,
+              { role: 'assistant', text: translatePresentationVerification(lang, 'clarify') },
+            ]),
+          onPresentationPlan: ({ steps, requiresConfirmation }) =>
+            setChat((previous) => [
+              ...previous,
+              {
+                role: 'assistant',
+                text: [
+                  translatePresentationVerification(lang, 'plan'),
+                  ...steps.map(
+                    (step) =>
+                      `• ${translatePresentationVerification(
+                        lang,
+                        step === 'presentation_verify_postconditions'
+                          ? 'verify_postconditions'
+                          : 'apply_bounded_edits',
+                      )}`,
+                  ),
+                  ...(requiresConfirmation
+                    ? [translatePresentationVerification(lang, 'needs_user')]
+                    : []),
+                ].join('\n'),
+              },
+            ]),
+          onPresentationCorrection: () =>
+            setChat((previous) => [
+              ...previous,
+              { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+            ]),
+          onText: (text) => patchLastAssistant({ text }),
+          onToolStart: (call) => {
+            // Live "running" chip: replaced in place by onToolExecuted
+            const activity: ToolActivity = {
+              callId: call.invocationId ?? call.id,
+              name: call.name,
+              summary: call.name.replace(/[_-]+/g, ' '),
+              running: true,
+            }
+            patchLastAssistant((last) => ({ tools: upsertToolActivity(last.tools, activity) }))
+          },
+          onToolExecuted: ({ call, execution }) => {
+            const activity: ToolActivity = {
+              callId: call.invocationId ?? call.id,
               name: call.name,
               summary: execution.summary,
               isError: execution.isError,
-              input: safeJsonInput(call.input),
               output: execution.output
-                ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+                ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS)
                 : undefined,
-            })
-          }
-          patchLastAssistant((last) => {
-            // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-            const tools = [...(last.tools ?? [])]
-            if (tools.at(-1)?.running) tools.pop()
-            return { tools: [...tools, activity] }
-          })
-        },
-        onTurnEnd: () => {
-          lastTurnToolsRef.current = []
-          patchLastAssistant({ streaming: false })
-          setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
-        },
-        onDone: ({ text, cancelled, turnLimit }) => {
-          const finalText = turnLimit
-            ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
-            : text || (cancelled ? tGlobal('aiStoppedNote') : '')
-          const ranTools = runToolsRef.current.length > 0
-          setChat((prev) => {
-            const next = [...prev]
-            const last = next.at(-1)
-            if (!last || last.role !== 'assistant') return prev
-            // Tool-heavy runs often end with an empty closing turn. Earlier
-            // bubbles already show the executed work — drop the empty trailing
-            // bubble instead of mislabeling the whole run as "no content".
-            if (!finalText && !last.text && !last.tools?.length && ranTools) {
-              next.pop()
-              return next
+              // Side channel: display comes from tools, not into LLM context, UI only
+              display: execution.display,
             }
-            next[next.length - 1] = {
-              ...last,
-              streaming: false,
-              text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
-              // A stop mid-tool can leave a running placeholder behind — drop it
-              tools: last.tools?.filter((tl) => !tl.running),
+            lastTurnToolsRef.current.push(activity)
+            if (!execution.display) {
+              runToolsRef.current.push({
+                name: call.name,
+                summary: execution.summary,
+                isError: execution.isError,
+                input: safeJsonInput(call.input),
+                output: execution.output
+                  ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+                  : undefined,
+              })
             }
-            return next
-          })
-          void completeSlidesHostRun({
-            cancelled,
-            finishHistoryBatch: () => finishHistoryBatch(false),
-            isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
-            hasQcPages: () => qcPagesRef.current.length > 0,
-            clearQcPages: () => {
-              qcPagesRef.current = []
-            },
-            runQc: () => void runQcPassRef.current(),
-            setBusy,
-            publishHistorySnapshot: (snapshot) => {
-              if (typeof snapshot !== 'number') return
-              runSnapshotIdRef.current = snapshot
-              patchLastAssistant({ snapshotId: snapshot })
-            },
-          })
-          // Persist the assistant message; tools store the whole run's full activity —
-          // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
-          if (finalText && !cancelled) {
-            persistMessage('assistant', finalText, runToolsRef.current)
-          }
-        },
-        onError: (error) => {
-          qcPagesRef.current = []
-          setChat((prev) => {
-            const next = [...prev]
-            // the loop rolled this run's user message out of the model context — surface that
-            for (let i = next.length - 1; i >= 0; i--) {
-              const entry = next[i]!
-              if (entry.role === 'user') {
-                next[i] = { ...entry, undelivered: true }
-                break
+            patchLastAssistant((last) => ({ tools: upsertToolActivity(last.tools, activity) }))
+          },
+          onTurnEnd: () => {
+            lastTurnToolsRef.current = []
+            patchLastAssistant({ streaming: false })
+            setChat((prev) => [
+              ...prev,
+              {
+                role: 'assistant',
+                text: '',
+                streaming: true,
+                ...(activeQueueTaskIdRef.current
+                  ? { queueTaskId: activeQueueTaskIdRef.current }
+                  : {}),
+              },
+            ])
+          },
+          onPresentationReceipt: ({ facts }) =>
+            translatePresentationVerification(lang, facts.status),
+          onDone: ({ text, cancelled, turnLimit, presentation, clarification }) => {
+            if (activeQueueRunRef.current) qcPagesRef.current = []
+            const localizedStatus = presentation
+              ? translatePresentationVerification(lang, presentation.status)
+              : ''
+            const finalText =
+              (clarification
+                ? translatePresentationVerification(lang, 'clarify')
+                : localizedStatus) ||
+              (turnLimit
+                ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
+                : text || (cancelled ? translatePresentationVerification(lang, 'cancelled') : ''))
+            const ranTools = runToolsRef.current.length > 0
+            setChat((prev) => {
+              const next = [...prev]
+              const activeId = activeQueueTaskIdRef.current
+              const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+              const last = next[index]
+              if (!last || last.role !== 'assistant') return prev
+              // Tool-heavy runs often end with an empty closing turn. Earlier
+              // bubbles already show the executed work — drop the empty trailing
+              // bubble instead of mislabeling the whole run as "no content".
+              if (!finalText && !last.text && !last.tools?.length && ranTools) {
+                next.splice(index, 1)
+                return next
               }
-            }
-            const last = next.at(-1)
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = {
+              next[index] = {
                 ...last,
                 streaming: false,
-                error,
+                text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
+                // A stop mid-tool can leave a running placeholder behind — drop it
                 tools: last.tools?.filter((tl) => !tl.running),
               }
-            }
-            return next
-          })
-          // Signed-out failures get an inline sign-in button; detected via
-          // wiswork status rather than matching the localized error text
-          void window.slidesApi
-            .aiAccountStatus()
-            .then((status) => {
-              if (status.loggedIn) return
-              setChat((prev) => {
-                const next = [...prev]
-                const last = next.at(-1)
-                if (last?.role === 'assistant' && last.error) {
-                  next[next.length - 1] = { ...last, loginRequired: true }
-                }
-                return next
-              })
+              return next
             })
-            .catch(() => {})
-          void finishHistoryBatch().finally(() => setBusy(false))
+            void completeSlidesHostRun({
+              cancelled,
+              qualityReviewOwner: 'agent',
+              finishHistoryBatch: () => finishHistoryBatch(false),
+              isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
+              hasQcPages: () => qcPagesRef.current.length > 0,
+              clearQcPages: () => {
+                qcPagesRef.current = []
+              },
+              runQc: () => void runQcPassRef.current(),
+              setBusy,
+              publishHistorySnapshot: (snapshot) => {
+                if (typeof snapshot !== 'number') return
+                runSnapshotIdRef.current = snapshot
+                patchLastAssistant({ snapshotId: snapshot })
+              },
+            }).finally(() => {
+              const queued = activeQueueRunRef.current
+              activeQueueRunRef.current = undefined
+              activeQueueTaskIdRef.current = undefined
+              activeSelectionScopeRef.current = undefined
+              if (queued) {
+                queued.resolve({
+                  taskId: queued.taskId,
+                  invocationId: queued.invocationId,
+                  ...(queued.transactionId ? { transactionId: queued.transactionId } : {}),
+                  status: cancelled && queued.status === 'unchanged' ? 'cancelled' : queued.status,
+                })
+              }
+            })
+            // Persist the assistant message; tools store the whole run's full activity —
+            // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
+            if (finalText && !cancelled) {
+              persistMessage('assistant', finalText, runToolsRef.current)
+            }
+          },
+          onAbandonedPresentationCompletion: async (event) => {
+            const key = 'slides-pending-presentation-completions'
+            const digest = async (value: string) => {
+              const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+              return [...new Uint8Array(bytes)]
+                .map((byte) => byte.toString(16).padStart(2, '0'))
+                .join('')
+            }
+            const safeEvent = {
+              documentDigest: await digest(event.documentToken),
+              sessionDigest: await digest(event.sessionToken),
+              receipt: event.receipt,
+              facts: event.facts,
+            }
+            try {
+              const existing = JSON.parse(localStorage.getItem(key) ?? '[]')
+              const bounded = Array.isArray(existing) ? existing.slice(-49) : []
+              localStorage.setItem(key, JSON.stringify([...bounded, safeEvent]))
+            } catch {
+              localStorage.setItem(key, JSON.stringify([safeEvent]))
+            }
+          },
+          onError: (error) => {
+            const friendlyError = friendlyEnhancedError(
+              error,
+              tGlobal('aiErrGenerateFailed'),
+              tGlobal('aiErrStreamTimeout'),
+              mutationExpiryStrings[lang][0],
+            )
+            qcPagesRef.current = []
+            setChat((prev) => {
+              const next = [...prev]
+              const activeId = activeQueueTaskIdRef.current
+              // Only call the request undelivered when no document tool ran. Once a bounded edit
+              // has completed, claiming that the request had no effect would be false.
+              if (shouldMarkEnhancedMessageUndelivered(runToolsRef.current.length)) {
+                for (let i = next.length - 1; i >= 0; i--) {
+                  const entry = next[i]!
+                  if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
+                    next[i] = { ...entry, undelivered: true }
+                    break
+                  }
+                }
+              }
+              const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+              const last = next[index]
+              if (last?.role === 'assistant') {
+                next[index] = {
+                  ...last,
+                  streaming: false,
+                  error: friendlyError,
+                  tools: last.tools?.filter((tl) => !tl.running),
+                }
+              }
+              return next
+            })
+            // Signed-out failures get an inline sign-in button; detected via
+            // wiswork status rather than matching the localized error text
+            void window.slidesApi
+              .aiAccountStatus()
+              .then((status) => {
+                if (status.loggedIn) return
+                setChat((prev) => {
+                  const next = [...prev]
+                  const last = next.at(-1)
+                  if (last?.role === 'assistant' && last.error) {
+                    next[next.length - 1] = { ...last, loginRequired: true }
+                  }
+                  return next
+                })
+              })
+              .catch(() => {})
+            void finishHistoryBatch().finally(() => {
+              setBusy(false)
+              const queued = activeQueueRunRef.current
+              activeQueueRunRef.current = undefined
+              activeQueueTaskIdRef.current = undefined
+              activeSelectionScopeRef.current = undefined
+              queued?.reject(new Error(friendlyError))
+            })
+          },
         },
       },
-    })
+      window.codexRuntime ? { host: 'slides', api: window.codexRuntime } : undefined,
+    )
   }
   useAgentControllerCleanup(loopRef)
 
@@ -1078,7 +1855,153 @@ export function AiPanel({
     // `open` dep: re-measure after expand restores a draft
   }, [input, open])
 
-  const run = () => runWith(input.trim())
+  const run = async () => {
+    await refreshDesignSidecar().catch(() => undefined)
+    const instruction = input.trim()
+    if (!selectionScopeEnabled || selectedRef.current.length === 0) {
+      runWith(instruction)
+      return
+    }
+    if (editQueueRef.current!.isDisposed) {
+      const queue = new SelectionEditQueue()
+      editQueueRef.current = queue
+      queue.subscribe(() => setQueueSnapshot(queue.snapshot()))
+      setQueueSnapshot(queue.snapshot())
+    }
+    const snapshot = editQueueRef.current!.snapshot()
+    if (
+      pendingCapturesRef.current.size + snapshot.queued + (snapshot.running ? 1 : 0) >=
+      EDIT_QUEUE_DEFAULT_CAPACITY
+    ) {
+      setAttachNotice('Selection edit queue is full.')
+      return
+    }
+    const identity = selectionIdentityRef.current
+    const invocationId = crypto.randomUUID()
+    const lifecycleEpoch = lifecycleEpochRef.current
+    const taskAttachments = [...attachmentsRef.current]
+    pendingCapturesRef.current.set(invocationId, lifecycleEpoch)
+    const priorCapture = captureTailRef.current
+    let releaseCapture!: () => void
+    const captureTurn = new Promise<void>((resolve) => (releaseCapture = resolve))
+    captureTailRef.current = priorCapture.then(() => captureTurn)
+    setInput('')
+    setAttachments([])
+    attachmentsRef.current = []
+    void window.slidesApi
+      .captureAgentSelection({
+        slideIndex: currentRef.current,
+        sourceIds: [...selectedRef.current],
+      })
+      .then(async (captured) => {
+        await priorCapture
+        releaseCapture()
+        const pendingEpoch = pendingCapturesRef.current.get(invocationId)
+        pendingCapturesRef.current.delete(invocationId)
+        if (
+          !mountedRef.current ||
+          pendingEpoch !== lifecycleEpoch ||
+          lifecycleEpoch !== lifecycleEpochRef.current ||
+          identity !== selectionIdentityRef.current
+        )
+          return
+        if (captured.status !== 'captured') {
+          setAttachNotice('The selection changed before it could be captured.')
+          return
+        }
+        try {
+          const task = editQueueRef.current!.enqueue(
+            { invocationId, instruction, scope: captured },
+            ({ taskId, scope, signal, markWriteStarted }) => {
+              activeQueueTaskIdRef.current = invocationId
+              activeSelectionScopeRef.current = scope
+              setQueuedScope(scope)
+              return new Promise<SelectionEditReceipt>((resolve, reject) => {
+                activeQueueRunRef.current = {
+                  taskId,
+                  invocationId,
+                  resolve,
+                  reject,
+                  status: 'unchanged',
+                  markWriteStarted,
+                }
+                const onAbort = () => {
+                  launchTokenRef.current++
+                  loopRef.current?.stop()
+                }
+                signal.addEventListener('abort', onAbort, { once: true })
+                if (
+                  !runWith(instruction, instruction, {
+                    attachments: taskAttachments,
+                    prequeued: true,
+                    queueTaskId: invocationId,
+                  })
+                ) {
+                  signal.removeEventListener('abort', onAbort)
+                  activeQueueRunRef.current = undefined
+                  activeSelectionScopeRef.current = undefined
+                  reject(new Error('Agent run is busy'))
+                }
+              })
+            },
+          )
+          setChat((previous) => [
+            ...previous,
+            {
+              role: 'user',
+              text: instruction,
+              queueTaskId: invocationId,
+              ...(taskAttachments.length ? { attachments: taskAttachments } : {}),
+            },
+            { role: 'assistant', text: 'Queued', streaming: false, queueTaskId: invocationId },
+          ])
+          persistMessage('user', instruction, undefined, taskAttachments)
+          void task.then(
+            (receipt) => {
+              if (
+                receipt.status === 'cancelled' &&
+                !persistedQueueTombstonesRef.current.has(invocationId)
+              ) {
+                persistedQueueTombstonesRef.current.add(invocationId)
+                persistMessage('assistant', 'Selection edit cancelled.')
+              }
+            },
+            () => undefined,
+          )
+          void task.catch((error) => {
+            setChat((previous) =>
+              previous.map((entry) =>
+                entry.queueTaskId === invocationId
+                  ? entry.role === 'user'
+                    ? { ...entry, undelivered: true }
+                    : { ...entry, streaming: false, text: 'Cancelled' }
+                  : entry,
+              ),
+            )
+            const cancelled = error instanceof DOMException && error.name === 'AbortError'
+            if (cancelled && !persistedQueueTombstonesRef.current.has(invocationId)) {
+              persistedQueueTombstonesRef.current.add(invocationId)
+              persistMessage('assistant', 'Selection edit cancelled.')
+            }
+            if (!cancelled)
+              setAttachNotice(error instanceof Error ? error.message : 'Selection edit failed')
+          })
+        } catch (error) {
+          setAttachNotice(
+            error instanceof EditQueueCapacityError
+              ? 'Selection edit queue is full.'
+              : 'Selection edit could not be queued.',
+          )
+        }
+      })
+      .catch(async () => {
+        await priorCapture
+        releaseCapture()
+        pendingCapturesRef.current.delete(invocationId)
+        if (lifecycleEpoch === lifecycleEpochRef.current)
+          setAttachNotice('The selection could not be captured.')
+      })
+  }
 
   /** Image attachments read as base64, sent multimodally with this user message (≤5MB per image, max 20; isomorphic to docs) */
   const MAX_IMAGES_PER_MESSAGE = 20
@@ -1109,18 +2032,26 @@ export function AiPanel({
     const slide = slidesRef.current[pageIndex]
     if (!slide) return null
     try {
-      const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, 1)
-      return png ? { base64: png, mime: 'image/png' } : null
+      return await boundedScreenshot(async (ratio) => {
+        const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, ratio)
+        return png
+      })
     } catch {
       return null
     }
   }
+  captureSlideShotRef.current = captureSlideShot
 
   const runWith = (
     instruction: string,
     displayText?: string,
-    opts?: { slideShot?: boolean; attachments?: AttachmentMeta[] },
-  ) => {
+    opts?: {
+      slideShot?: boolean
+      attachments?: AttachmentMeta[]
+      prequeued?: boolean
+      queueTaskId?: string
+    },
+  ): boolean => {
     const loop = loopRef.current
     // runStartingRef: loop.run is called only after attachments are read asynchronously, during which loop.busy is still false,
     // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
@@ -1133,7 +2064,7 @@ export function AiPanel({
       runStartingRef.current ||
       qcRunningRef.current
     )
-      return
+      return false
     runStartingRef.current = true
     const launchToken = ++launchTokenRef.current
     activeRunTokenRef.current = launchToken
@@ -1161,12 +2092,23 @@ export function AiPanel({
     stickToBottomRef.current = true
     // Internal orchestration prompts (like deck-planning notes) skip the chat bubble and go only to the model
     const shown = displayText ?? instruction
-    setChat((prev) => [
-      // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
-      ...prev.map((e) => (e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e)),
-      { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
-      { role: 'assistant', text: '', streaming: true },
-    ])
+    if (!opts?.prequeued)
+      setChat((prev) => [
+        // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
+        ...prev.map((e) =>
+          e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e,
+        ),
+        { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
+        { role: 'assistant', text: '', streaming: true },
+      ])
+    else
+      setChat((previous) =>
+        previous.map((entry) =>
+          entry.role === 'assistant' && entry.queueTaskId === opts.queueTaskId
+            ? { ...entry, text: '', streaming: true }
+            : entry,
+        ),
+      )
     runStartedAtRef.current = Date.now()
     setBusy(true)
     void collectImageAttachments(sentAtts)
@@ -1196,9 +2138,10 @@ export function AiPanel({
             // leaves no duplicate-launch window and keeps Stop authoritative while
             // beginHistoryBatch is still in flight.
             runStartingRef.current = false
-            recordSlidesRunAttachments(sentAtts, (runAttachments) =>
-              persistMessage('user', shown, undefined, [...runAttachments]),
-            )
+            if (!opts?.prequeued)
+              recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+                persistMessage('user', shown, undefined, [...runAttachments]),
+              )
             return loop.run(modelInstruction, images)
           },
         })
@@ -1209,14 +2152,10 @@ export function AiPanel({
         runStartingRef.current = false
         void finishHistoryBatch().finally(() => setBusy(false))
       })
+    return true
   }
 
-  /**
-   * Post-generation layout QC: each page landed by this run gets one focused vision pass in a
-   * fresh AgentLoop (screenshot + inventory → constrained fixes via execute_slide_script).
-   * Each page's edits sit in their own history batch; if the deterministic audit says the page
-   * got worse, that batch is rolled back. Progress streams into one assistant chat entry.
-   */
+  /** Post-generation quality review. It is read-only and has no history/rollback boundary. */
   const runQcPass = async () => {
     const pages = qcPagesRef.current
     qcPagesRef.current = []
@@ -1225,10 +2164,23 @@ export function AiPanel({
     qcRunningRef.current = true
     const controller = new AbortController()
     qcAbortRef.current = controller
+    const sessionToken = activeRunTokenRef.current
+    const isCurrentQc = () =>
+      qcAbortRef.current === controller &&
+      activeRunTokenRef.current === sessionToken &&
+      !controller.signal.aborted
     const capped = pages.slice(0, QC_MAX_PAGES)
-    const transport = createElectronTransport(() => settingsRef.current)
+    const transport = createElectronTransport(() => settingsRef.current, {
+      maxSerializedRequestBytes: 2 * 1024 * 1024,
+    })
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
+    const receipts: PresentationQualityReceipt[] = []
+    const contextOutcomes: Array<{
+      page: number
+      status: 'passed' | 'needs_fix' | 'unavailable'
+      corrected: boolean
+    }> = []
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
@@ -1241,66 +2193,178 @@ export function AiPanel({
       ),
       { role: 'assistant', text: header, streaming: true },
     ])
-    // First kept QC batch — the run's own batch takes precedence (it is earlier,
-    // so restoring it rewinds past the QC edits too)
-    let qcSnapshotId: number | null = null
     let activePage = capped[0] ?? 0
     try {
       for (const page of capped) {
         activePage = page
-        if (controller.signal.aborted || qcAbortRef.current !== controller) break
+        if (!isCurrentQc()) break
         const captured = await captureCurrentQcShot({
           capture: () => captureSlideShot(page),
           signal: controller.signal,
-          isCurrent: () => qcAbortRef.current === controller,
+          isCurrent: isCurrentQc,
         })
         if (!captured) break
         const shot = captured.value
         if (!shot) {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: false })
+          const transactionId = qcTransactionByPageRef.current.get(page)
+          const deterministic = transactionId
+            ? [...qualityReceiptsRef.current]
+                .reverse()
+                .find(
+                  (receipt) =>
+                    receipt.transactionId === transactionId && receipt.source === 'deterministic',
+                )
+            : undefined
+          if (deterministic) {
+            const receipt = toVisualQualityReceipt(
+              `qc-vis-${page}-${transactionId!.slice(0, 100)}`,
+              transactionId!,
+              deterministic.slideId,
+              {
+                ok: false,
+                edited: false,
+                reply: '',
+                preIssues: 0,
+                postIssues: 0,
+                error: 'screenshot_unavailable',
+              },
+            )
+            publishQualityReceipt(receipt)
+            receipts.push(receipt)
+          }
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const qcRun = await runQcInHistoryBatch({
-          begin: () => window.slidesApi.beginHistoryBatch(),
-          end: () => window.slidesApi.endHistoryBatch(),
-          run: () =>
-            qcSlidePage({
-              access,
-              transport,
-              pageIndex: page,
-              screenshot: shot,
-              systemSuffix: aiLangDirective,
-              signal: controller.signal,
-            }),
+        const design = presentationDesignContextRef.current
+        const pageDesign = design?.pages[page]
+        const designContext = design
+          ? `${design.designMd.slice(0, 3_000)}\n\nCurrent page:\n${JSON.stringify(pageDesign ?? {})}`
+          : undefined
+        let result = await qcSlidePage({
+          access,
+          transport,
+          pageIndex: page,
+          screenshot: shot,
+          designContext,
+          systemSuffix: aiLangDirective,
           signal: controller.signal,
-          isCurrent: () => qcAbortRef.current === controller,
+          isCurrent: isCurrentQc,
         })
-        if (!qcRun) break
-        const { result, batchId } = qcRun
-        if (controller.signal.aborted) break
-        if (result.error) {
-          lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))
-        } else if (result.edited && result.postIssues > result.preIssues) {
-          // The fix made the deterministic audit worse — undo this page's batch
-          if (typeof batchId === 'number') {
-            const restored = await window.slidesApi.aiSnapshotRestore(batchId)
-            if (restored)
-              applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
+        if (!isCurrentQc()) break
+        if (result.fixes?.length) {
+          const batchOpened = await window.slidesApi.beginHistoryBatch()
+          let correctionSnapshotId: number | undefined
+          let applied = false
+          try {
+            if (batchOpened)
+              applied = await applyQcGeometryFixes(access, page, result.fixes, controller.signal)
+          } finally {
+            if (batchOpened) {
+              const id = await window.slidesApi.endHistoryBatch()
+              if (typeof id === 'number') correctionSnapshotId = id
+            }
           }
-          lines.push(tGlobal('aiQcPageReverted', { n: page + 1 }))
-        } else if (result.edited) {
-          const summary =
-            result.reply && result.reply.toUpperCase() !== 'OK'
-              ? result.reply
-              : tGlobal('aiQcPageFixedDefault')
-          lines.push(tGlobal('aiQcPageFixed', { n: page + 1, summary }))
-          if (typeof batchId === 'number' && qcSnapshotId == null) qcSnapshotId = batchId
+          if (applied && isCurrentQc()) {
+            const recaptured = await captureCurrentQcShot({
+              capture: () => captureSlideShot(page),
+              signal: controller.signal,
+              isCurrent: isCurrentQc,
+            })
+            if (!recaptured) break
+            if (recaptured.value) {
+              const verified = await qcSlidePage({
+                access,
+                transport,
+                pageIndex: page,
+                screenshot: recaptured.value,
+                designContext,
+                systemSuffix: aiLangDirective,
+                signal: controller.signal,
+                isCurrent: isCurrentQc,
+              })
+              if (!isCurrentQc()) break
+              if (correctionSnapshotId !== undefined && verified.postIssues > result.preIssues) {
+                const restored = await window.slidesApi.aiSnapshotRestore(correctionSnapshotId)
+                if (restored) {
+                  applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
+                  lines.push(tGlobal('aiQcPageReverted', { n: page + 1 }))
+                } else {
+                  result = { ...verified, edited: true }
+                }
+              } else {
+                result = { ...verified, edited: true }
+              }
+            }
+          }
+        }
+        access.markPresentationPageReviewed?.(
+          page,
+          result.ok && result.postIssues === 0 && result.reply.trim().toUpperCase() === 'OK',
+        )
+        const transactionId = qcTransactionByPageRef.current.get(page)
+        const deterministic = transactionId
+          ? [...qualityReceiptsRef.current]
+              .reverse()
+              .find(
+                (receipt) =>
+                  receipt.transactionId === transactionId && receipt.source === 'deterministic',
+              )
+          : undefined
+        const qualityReceipt =
+          transactionId && deterministic
+            ? toVisualQualityReceipt(
+                `qc-vis-${page}-${transactionId.slice(0, 100)}`,
+                transactionId,
+                deterministic.slideId,
+                result,
+              )
+            : undefined
+        if (qualityReceipt) {
+          publishQualityReceipt(qualityReceipt)
+          receipts.push(qualityReceipt)
+        }
+        if (qualityReceipt?.status !== 'available') {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: result.edited })
+          lines.push(tGlobal('aiQcUnavailable', { n: page + 1, error: 'quality_unavailable' }))
+        } else if (qualityReceipt.findings.length > 0) {
+          contextOutcomes.push({ page: page + 1, status: 'needs_fix', corrected: result.edited })
+          lines.push(tGlobal('aiQcPageIssues', { n: page + 1, summary: result.reply }))
         } else {
-          lines.push(tGlobal('aiQcPageOk', { n: page + 1 }))
+          contextOutcomes.push({ page: page + 1, status: 'passed', corrected: result.edited })
+          lines.push(tGlobal('aiQcPassed', { n: page + 1 }))
         }
         patchLastAssistant({ text: renderEntry() })
       }
+      if (!isCurrentQc()) return
       if (pages.length > capped.length) {
+        for (const page of pages.slice(capped.length)) {
+          const transactionId = qcTransactionByPageRef.current.get(page)
+          const deterministic = transactionId
+            ? [...qualityReceiptsRef.current]
+                .reverse()
+                .find(
+                  (receipt) =>
+                    receipt.transactionId === transactionId && receipt.source === 'deterministic',
+                )
+            : undefined
+          if (!transactionId || !deterministic) continue
+          const receipt = toVisualQualityReceipt(
+            `qc-vis-${page}-${transactionId.slice(0, 100)}`,
+            transactionId,
+            deterministic.slideId,
+            {
+              ok: false,
+              edited: false,
+              reply: '',
+              preIssues: 0,
+              postIssues: 0,
+              error: 'visual_capacity_exceeded',
+            },
+          )
+          publishQualityReceipt(receipt)
+          receipts.push(receipt)
+        }
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
       if (controller.signal.aborted) lines.push(tGlobal('aiQcStopped'))
@@ -1310,19 +2374,29 @@ export function AiPanel({
       } else {
         // Keep host/deck details out of the UI and persisted chat. The exact
         // failure remains observable through existing local diagnostics.
-        lines.push(tGlobal('aiQcPageFailed', { n: activePage + 1, error: 'qc_failed' }))
+        lines.push(tGlobal('aiQcUnavailable', { n: activePage + 1, error: 'quality_unavailable' }))
       }
     } finally {
-      qcRunningRef.current = false
-      qcAbortRef.current = null
-      const finalText = renderEntry()
-      patchLastAssistant({
-        streaming: false,
-        text: finalText,
-        snapshotId: runSnapshotIdRef.current ?? qcSnapshotId ?? undefined,
-      })
-      persistMessage('assistant', finalText)
-      setBusy(false)
+      if (!isCurrentQc()) {
+        if (qcAbortRef.current === controller) {
+          qcRunningRef.current = false
+          qcAbortRef.current = null
+        }
+      } else {
+        qcRunningRef.current = false
+        qcAbortRef.current = null
+        const finalText = renderEntry()
+        if (contextOutcomes.length > 0)
+          loopRef.current?.appendAssistantContext(buildVisualQcContext(contextOutcomes))
+        patchLastAssistant({
+          streaming: false,
+          text: finalText,
+          snapshotId: runSnapshotIdRef.current ?? undefined,
+          qualityReceipts: receipts,
+        })
+        persistMessage('assistant', finalText)
+        setBusy(false)
+      }
     }
   }
   runQcPassRef.current = runQcPass
@@ -1335,6 +2409,11 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
+    editQueueRef.current?.cancelAll('stop')
+    activeSelectionScopeRef.current = undefined
     const wasPrelaunch = runStartingRef.current
     launchTokenRef.current++
     if (wasPrelaunch) {
@@ -1356,16 +2435,25 @@ export function AiPanel({
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      lifecycleEpochRef.current++
+      pendingCapturesRef.current.clear()
+      captureTailRef.current = Promise.resolve()
+      editQueueRef.current?.dispose()
       launchTokenRef.current++
       runStartingRef.current = false
       qcAbortRef.current?.abort()
       dismissClarify()
       loopRef.current?.stop()
-    },
-    [],
-  )
+      if (__WISWORK_SLIDES_ACCEPTANCE_E2E__)
+        delete (
+          window as typeof window & { __wisworkSlidesRunAcceptanceAgent?: () => Promise<unknown> }
+        ).__wisworkSlidesRunAcceptanceAgent
+    }
+  }, [])
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
@@ -1373,6 +2461,11 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
+    editQueueRef.current?.cancelAll('new chat')
+    activeSelectionScopeRef.current = undefined
     launchTokenRef.current++
     runStartingRef.current = false
     dismissClarify()
@@ -1380,9 +2473,141 @@ export function AiPanel({
     loopRef.current?.reset()
     setBusy(false)
     setChat([])
+    setQualityTimeline([])
+    qualityReceiptsRef.current = []
+    qcTransactionByPageRef.current.clear()
     sentAttachmentsRef.current = []
     readAttachmentPathsRef.current.clear()
     inputRef.current?.focus()
+  }
+
+  const openDesignEditor = (designMd: string) => {
+    setDesignDraft(designMd)
+    setDesignEditorEditable(
+      designMd === presentationDesignContextRef.current?.designMd &&
+        presentationDesignLifecycle(designMd).editable,
+    )
+    setDesignNotice(null)
+    setDesignEditorEditing(false)
+    setDesignEditorOpen(true)
+  }
+
+  const openDesignInWisWork = async () => {
+    const result = await window.slidesApi.openDesignSidecar?.()
+    if (result?.ok) {
+      setDesignEditorOpen(false)
+      return
+    }
+    setDesignNotice(
+      lang.startsWith('zh')
+        ? result?.error === 'presentation_not_saved'
+          ? '请先保存演示文稿，再使用 WisWork Markdown 编辑器打开。'
+          : '当前环境不支持 WisWork Markdown 编辑器，请在此处编辑。'
+        : result?.error === 'presentation_not_saved'
+          ? 'Save the presentation before opening it in WisWork Markdown.'
+          : 'WisWork Markdown is unavailable here. Edit the file in this panel.',
+    )
+  }
+
+  const openDesignPreferNative = async (designMd: string) => {
+    setDesignDraft(designMd)
+    const result = await window.slidesApi.openDesignSidecar?.()
+    if (result?.ok) return
+    openDesignEditor(designMd)
+  }
+
+  const saveDesignEditor = async () => {
+    // A user edit invalidates the exact embedded structured snapshot. Remove it
+    // so the next turn must normalize the visible contract through plan_deck.
+    const editedDraft = designDraft.replace(
+      /\n?<!-- WISWORK_PRESENTATION_(?:DESIGN_CONTRACT|PROGRESS):[^\n]* -->/g,
+      '',
+    )
+    const body = editedDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
+    if (!body) {
+      setDesignNotice('DESIGN.md cannot be empty.')
+      return
+    }
+    const designMd = `# DESIGN.md\n\n${body}`
+    const result = await window.slidesApi.saveStyleSidecar({
+      topic: 'Edited design contract',
+      styleSkill: body,
+      designMd,
+      createdAt: new Date().toISOString(),
+    })
+    if (!result.ok) {
+      setDesignNotice('DESIGN.md could not be saved.')
+      return
+    }
+    presentationDesignContextRef.current = {
+      designMd,
+      pages: [],
+    }
+    setDesignDraft(designMd)
+    setChat((previous) => [
+      ...previous,
+      {
+        role: 'assistant',
+        text: '',
+        tools: [
+          {
+            name: 'design_contract',
+            summary: 'DESIGN.md · updated · replan required',
+            output: designMd,
+          },
+        ],
+      },
+    ])
+    setDesignEditorOpen(false)
+  }
+
+  const beginDesignRevision = async () => {
+    const locked = extractPresentationDesignContract(designDraft)
+    if (!locked || !['producing', 'verified'].includes(locked.status)) return
+    const revised = revisePresentationDesignContract(locked, {
+      reason: 'User requested edits to a locked DESIGN.md revision',
+      scope: { type: 'global' },
+    })
+    const designMd = renderPresentationDesignContract(revised.contract)
+    const result = await window.slidesApi.saveStyleSidecar({
+      topic: revised.contract.brief.topic || revised.contract.narrative.coreHook,
+      styleSkill: revised.contract.visualSystem.style,
+      designMd,
+      createdAt: new Date().toISOString(),
+    })
+    if (!result.ok) {
+      setDesignNotice('DESIGN.md revision could not be created.')
+      return
+    }
+    presentationDesignContextRef.current = {
+      designMd,
+      pages: revised.contract.slides.map((slide) => ({
+        visual: slide.visualRoute,
+        acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+        density: slide.density,
+      })),
+    }
+    setDesignDraft(designMd)
+    setDesignEditorEditable(true)
+    setChat((previous) => [
+      ...previous,
+      {
+        role: 'assistant',
+        text: '',
+        tools: [
+          {
+            name: 'design_contract',
+            summary: `DESIGN.md · revised · r${revised.contract.revision}`,
+            output: JSON.stringify({
+              status: revised.contract.status,
+              revision: revised.contract.revision,
+              designMd,
+              invalidation: revised.invalidation,
+            }),
+          },
+        ],
+      },
+    ])
   }
 
   const copyMessage = (text: string, idx: number) => {
@@ -1516,6 +2741,18 @@ export function AiPanel({
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">
+          {presentationDesignContextRef.current?.designMd && (
+            <button
+              className="ai-header-btn ai-design-header-btn"
+              onClick={() =>
+                void openDesignPreferNative(presentationDesignContextRef.current!.designMd)
+              }
+              data-tip="Open DESIGN.md"
+              aria-label="Open DESIGN.md"
+            >
+              DESIGN
+            </button>
+          )}
           {chat.length > 0 && (
             <button
               className="ai-header-btn"
@@ -1539,23 +2776,109 @@ export function AiPanel({
         </div>
       </div>
 
+      {designEditorOpen && (
+        <div className="ai-design-backdrop" role="presentation">
+          <section
+            className="ai-design-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="DESIGN.md"
+          >
+            <header>
+              <strong>DESIGN.md</strong>
+              <button
+                className="ai-header-btn"
+                onClick={() => setDesignEditorOpen(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </header>
+            <p>
+              {lang.startsWith('zh')
+                ? '演示文稿的计划、素材、逐页设计与验收标准。后续制作和验证均以此为准。'
+                : 'The plan, assets, slide direction, and acceptance criteria used for production and review.'}
+            </p>
+            {designEditorEditing ? (
+              <textarea
+                value={designDraft}
+                onChange={(event) => setDesignDraft(event.target.value)}
+                spellCheck={false}
+                aria-label="DESIGN.md content"
+              />
+            ) : (
+              <div className="ai-design-preview" aria-label="DESIGN.md content">
+                <Markdown text={designDraft} />
+              </div>
+            )}
+            {designNotice && (
+              <div className="ai-design-notice" role="status">
+                {designNotice}
+              </div>
+            )}
+            <footer>
+              {window.slidesApi.openDesignSidecar && (
+                <button onClick={() => void openDesignInWisWork()}>
+                  {lang.startsWith('zh') ? '在 WisWork 中打开' : 'Open in WisWork'}
+                </button>
+              )}
+              <button onClick={() => setDesignEditorOpen(false)}>
+                {lang.startsWith('zh') ? '关闭' : 'Close'}
+              </button>
+              {designEditorEditable && !designEditorEditing && (
+                <button className="primary" onClick={() => setDesignEditorEditing(true)}>
+                  {lang.startsWith('zh') ? '编辑' : 'Edit'}
+                </button>
+              )}
+              {designEditorEditable && designEditorEditing && (
+                <button className="primary" onClick={() => void saveDesignEditor()}>
+                  {lang.startsWith('zh') ? '保存' : 'Save'}
+                </button>
+              )}
+              {!designEditorEditable &&
+                ['producing', 'verified'].includes(
+                  extractPresentationDesignContract(designDraft)?.status ?? '',
+                ) && (
+                  <button className="primary" onClick={() => void beginDesignRevision()}>
+                    Create revision
+                  </button>
+                )}
+            </footer>
+          </section>
+        </div>
+      )}
+
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
         {/* Past conversation (read-only transcript, not fed to the model), displayed continuously with the current turn */}
         {historicChat.length > 0 && (
           <>
-            {historicChat.map((entry, i) => (
-              <div key={`h${i}`} className={`ai-msg ai-msg-${entry.role} ai-msg-historic`}>
-                {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
-                  <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
-                )}
-                {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
-                {entry.text && <Markdown text={entry.text} />}
-              </div>
-            ))}
+            {historicChat.map((entry, i) => {
+              const blocks = presentationTimelineBlockOrder(entry)
+              return (
+                <React.Fragment key={`h${i}`}>
+                  {blocks.includes('message') && (
+                    <div className={`ai-msg ai-msg-${entry.role} ai-msg-historic`}>
+                      {entry.role === 'user' &&
+                        entry.attachments &&
+                        entry.attachments.length > 0 && (
+                          <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
+                        )}
+                      {entry.text && <Markdown text={entry.text} />}
+                    </div>
+                  )}
+                  {blocks.includes('tools') && entry.tools && (
+                    <ToolChipList
+                      tools={entry.tools}
+                      onOpenDesign={(designMd) => void openDesignPreferNative(designMd)}
+                    />
+                  )}
+                </React.Fragment>
+              )
+            })}
             <div className="ai-history-sep">{t('aiHistorySep')}</div>
           </>
         )}
-        {chat.length === 0 && historicChat.length === 0 && (
+        {chat.length === 0 && historicChat.length === 0 && qualityTimeline.length === 0 && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">
               {t(deckEmpty ? 'aiEmptyGenTitle' : 'aiEmptyTitle')}
@@ -1602,124 +2925,138 @@ export function AiPanel({
             turnEnded &&
             // edits-only turns have no text but still carry the rollback point
             (!!(entry.text || entry.error) || entry.snapshotId != null)
+          const showProgress = shouldShowStreamingProgress(entry)
+          const blocks = presentationTimelineBlockOrder({
+            ...entry,
+            hasMessageChrome: !!entry.error || !!entry.loginRequired || showToolbar,
+          })
           return (
-            <div
-              key={i}
-              className={`ai-msg ai-msg-${entry.role}${entry.role === 'assistant' && entry.streaming ? ' ai-msg-streaming' : ''}`}
-            >
-              {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
-                <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
-              )}
-              {entry.role === 'assistant' && !entry.text && entry.streaming ? (
-                <span className="ai-typing-row">
-                  <AiTypingIndicator
-                    label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
-                  />
-                </span>
-              ) : entry.role === 'assistant' ? (
-                <Markdown text={entry.text} />
-              ) : (
-                entry.text
-              )}
-              {entry.role === 'user' && entry.undelivered && (
-                <div className="ai-msg-undelivered">{t('aiUndelivered')}</div>
-              )}
-              {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
-              {entry.error && (
-                <div className="ai-msg-error">{t('aiMsgError', { error: entry.error })}</div>
-              )}
-              {entry.loginRequired && (
-                <button
-                  className="ai-login-btn"
-                  onClick={() => void window.slidesApi.aiAccountLogin()}
+            <React.Fragment key={i}>
+              {blocks.includes('message') && (
+                <div
+                  className={`ai-msg ai-msg-${entry.role}${entry.role === 'assistant' && entry.streaming ? ' ai-msg-streaming' : ''}`}
                 >
-                  {t('aiWisWorkLoginBtn')}
-                </button>
-              )}
-              {showToolbar && (
-                <div className="ai-msg-toolbar">
-                  {entry.text && (
-                    <button
-                      className="ai-msg-tool-btn"
-                      onClick={() => copyMessage(entry.text, i)}
-                      aria-label={t('aiCopyReply')}
-                      data-tip={t('aiCopyReply')}
-                    >
-                      {copiedIdx === i ? (
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      ) : (
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                          <path
-                            d="M14.6113 5.34253C16.0608 5.3428 17.2363 6.518 17.2363 7.96753V15.5066C17.2361 16.956 16.0607 18.1313 14.6113 18.1316H7.07227C5.62267 18.1316 4.44751 16.9561 4.44727 15.5066V7.96753C4.44732 6.51783 5.62255 5.34253 7.07227 5.34253H14.6113ZM7.07227 6.59253C6.31291 6.59253 5.69732 7.20819 5.69727 7.96753V15.5066C5.69751 16.2658 6.31302 16.8816 7.07227 16.8816H14.6113C15.3703 16.8813 15.9861 16.2656 15.9863 15.5066V7.96753C15.9863 7.20835 15.3705 6.5928 14.6113 6.59253H7.07227ZM10.0176 2.8689C10.3626 2.86905 10.6426 3.14882 10.6426 3.4939C10.6425 3.83888 10.3626 4.11874 10.0176 4.1189H4.59961C3.84022 4.1189 3.22461 4.73451 3.22461 5.4939V11.324C3.22433 11.6689 2.94461 11.949 2.59961 11.949C2.25461 11.949 1.97489 11.6689 1.97461 11.324V5.4939C1.97461 4.04415 3.14987 2.8689 4.59961 2.8689H10.0176Z"
-                            fill="currentColor"
-                          />
-                        </svg>
-                      )}
-                    </button>
+                  {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
+                    <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
                   )}
-                  {isLast && !busy && lastInstructionRef.current && (
-                    <button
-                      className="ai-msg-tool-btn"
-                      onClick={retry}
-                      aria-label={t('aiRegenerate')}
-                      data-tip={t('aiRegenerate')}
-                    >
-                      {/* 24-canvas glyph at 18px (near-full-bleed paths, sized for optical
-                          parity with the copy icon): stroke 1.5 paints 1.125px (1:16) */}
-                      <svg
-                        style={{ width: 18, height: 18 }}
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden
-                      >
-                        <path d="M3.68881 9.85339C4.1791 8.0054 5.28205 6.30704 6.9459 5.09101C10.8046 2.27085 16.2188 3.11279 19.0389 6.97147C19.7242 7.90904 20.1932 8.93842 20.4553 10.0001" />
-                        <path d="M2.00452 8.46411L2.87229 10.7059C2.96814 10.9535 3.24658 11.0765 3.4942 10.9807L5.73594 10.1129" />
-                        <path d="M20.3308 14.4908C19.8405 16.3388 18.7376 18.0372 17.0738 19.2532C13.215 22.0734 7.80083 21.2314 4.98071 17.3728C4.22167 16.3342 3.72792 15.183 3.48686 13.9999" />
-                        <path d="M22.0151 15.8801L21.1474 13.6384C21.0515 13.3908 20.7731 13.2677 20.5255 13.3636L18.2837 14.2314" />
-                      </svg>
-                    </button>
-                  )}
-                  {entry.snapshotId != null && (
+                  {entry.role === 'assistant' ? (
                     <>
-                      {/* hairline between reply actions (icons) and the document action (icon+label);
-                          CSS shows it only when an icon button actually precedes it */}
-                      <span className="ai-rollback-sep" aria-hidden />
-                      <RollbackButton
-                        disabled={busy}
-                        onClick={() => void rollback(entry.snapshotId!)}
-                      />
+                      {entry.text && <Markdown text={entry.text} />}
+                      {showProgress && (
+                        <span className="ai-typing-row">
+                          <AiTypingIndicator label={t('aiThinking')} />
+                        </span>
+                      )}
                     </>
+                  ) : (
+                    entry.text
                   )}
-                </div>
-              )}
-              {clarifyAnswers
-                .filter((c) => c.afterIdx === i)
-                .map((c, k) => (
-                  <div key={`ca${k}`} className="ai-clarify-answered">
-                    {c.qa.map((pair, m) => (
-                      <div key={m} className="ai-clarify-answered-row">
-                        <div className="ai-clarify-answered-q">{pair.q}</div>
-                        <div className="ai-clarify-answered-a">{pair.a}</div>
+                  {entry.role === 'user' && entry.undelivered && (
+                    <div className="ai-msg-undelivered">{t('aiUndelivered')}</div>
+                  )}
+                  {entry.error && (
+                    <div className="ai-msg-error">{t('aiMsgError', { error: entry.error })}</div>
+                  )}
+                  {entry.loginRequired && (
+                    <button
+                      className="ai-login-btn"
+                      onClick={() => void window.slidesApi.aiAccountLogin()}
+                    >
+                      {t('aiWisWorkLoginBtn')}
+                    </button>
+                  )}
+                  {showToolbar && (
+                    <div className="ai-msg-toolbar">
+                      {entry.text && (
+                        <button
+                          className="ai-msg-tool-btn"
+                          onClick={() => copyMessage(entry.text, i)}
+                          aria-label={t('aiCopyReply')}
+                          data-tip={t('aiCopyReply')}
+                        >
+                          {copiedIdx === i ? (
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          ) : (
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                              <path
+                                d="M14.6113 5.34253C16.0608 5.3428 17.2363 6.518 17.2363 7.96753V15.5066C17.2361 16.956 16.0607 18.1313 14.6113 18.1316H7.07227C5.62267 18.1316 4.44751 16.9561 4.44727 15.5066V7.96753C4.44732 6.51783 5.62255 5.34253 7.07227 5.34253H14.6113ZM7.07227 6.59253C6.31291 6.59253 5.69732 7.20819 5.69727 7.96753V15.5066C5.69751 16.2658 6.31302 16.8816 7.07227 16.8816H14.6113C15.3703 16.8813 15.9861 16.2656 15.9863 15.5066V7.96753C15.9863 7.20835 15.3705 6.5928 14.6113 6.59253H7.07227ZM10.0176 2.8689C10.3626 2.86905 10.6426 3.14882 10.6426 3.4939C10.6425 3.83888 10.3626 4.11874 10.0176 4.1189H4.59961C3.84022 4.1189 3.22461 4.73451 3.22461 5.4939V11.324C3.22433 11.6689 2.94461 11.949 2.59961 11.949C2.25461 11.949 1.97489 11.6689 1.97461 11.324V5.4939C1.97461 4.04415 3.14987 2.8689 4.59961 2.8689H10.0176Z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                      {isLast && !busy && lastInstructionRef.current && (
+                        <button
+                          className="ai-msg-tool-btn"
+                          onClick={retry}
+                          aria-label={t('aiRegenerate')}
+                          data-tip={t('aiRegenerate')}
+                        >
+                          {/* 24-canvas glyph at 18px (near-full-bleed paths, sized for optical
+                          parity with the copy icon): stroke 1.5 paints 1.125px (1:16) */}
+                          <svg
+                            style={{ width: 18, height: 18 }}
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden
+                          >
+                            <path d="M3.68881 9.85339C4.1791 8.0054 5.28205 6.30704 6.9459 5.09101C10.8046 2.27085 16.2188 3.11279 19.0389 6.97147C19.7242 7.90904 20.1932 8.93842 20.4553 10.0001" />
+                            <path d="M2.00452 8.46411L2.87229 10.7059C2.96814 10.9535 3.24658 11.0765 3.4942 10.9807L5.73594 10.1129" />
+                            <path d="M20.3308 14.4908C19.8405 16.3388 18.7376 18.0372 17.0738 19.2532C13.215 22.0734 7.80083 21.2314 4.98071 17.3728C4.22167 16.3342 3.72792 15.183 3.48686 13.9999" />
+                            <path d="M22.0151 15.8801L21.1474 13.6384C21.0515 13.3908 20.7731 13.2677 20.5255 13.3636L18.2837 14.2314" />
+                          </svg>
+                        </button>
+                      )}
+                      {entry.snapshotId != null && (
+                        <>
+                          {/* hairline between reply actions (icons) and the document action (icon+label);
+                          CSS shows it only when an icon button actually precedes it */}
+                          <span className="ai-rollback-sep" aria-hidden />
+                          <RollbackButton
+                            disabled={busy}
+                            onClick={() => void rollback(entry.snapshotId!)}
+                          />
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {clarifyAnswers
+                    .filter((c) => c.afterIdx === i)
+                    .map((c, k) => (
+                      <div key={`ca${k}`} className="ai-clarify-answered">
+                        {c.qa.map((pair, m) => (
+                          <div key={m} className="ai-clarify-answered-row">
+                            <div className="ai-clarify-answered-q">{pair.q}</div>
+                            <div className="ai-clarify-answered-a">{pair.a}</div>
+                          </div>
+                        ))}
                       </div>
                     ))}
-                  </div>
-                ))}
-            </div>
+                </div>
+              )}
+              {blocks.includes('tools') && entry.tools && (
+                <ToolChipList
+                  tools={entry.tools}
+                  onOpenDesign={(designMd) => void openDesignPreferNative(designMd)}
+                />
+              )}
+            </React.Fragment>
           )
         })}
         {activeClarify && (
@@ -1752,6 +3089,15 @@ export function AiPanel({
         </div>
       ) : (
         <div className="ai-composer">
+          {queuedScope &&
+            (queueSnapshot.running || queueSnapshot.queued > 0 || queueSnapshot.paused) && (
+              <EditQueueCard
+                scope={queuedScope}
+                queue={queueSnapshot}
+                onResume={() => editQueueRef.current?.resume()}
+                onCancel={() => editQueueRef.current?.cancelAll('cancelled')}
+              />
+            )}
           {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
           <div className="ai-input-box">
             {attachments.length > 0 && (
@@ -1841,13 +3187,22 @@ export function AiPanel({
               rows={1}
             />
             <div className="ai-input-footer">
+              <label className="ai-selection-scope-toggle">
+                <input
+                  type="checkbox"
+                  checked={selectionScopeEnabled}
+                  disabled={selectedIds.length === 0 || busy}
+                  onChange={(event) => setSelectionScopeEnabled(event.target.checked)}
+                />
+                Edit selection
+              </label>
               <button
                 className="ai-attach-btn"
                 onClick={pickAttachments}
                 data-tip={t('aiAttachTitle')}
                 aria-label={t('aiAttachTitle')}
               >
-                <img src={attachIcon} alt="" aria-hidden />
+                <IconPaperclip size={20} />
               </button>
               {busy ? (
                 <button
@@ -1866,7 +3221,7 @@ export function AiPanel({
                   data-tip={t('aiSend')}
                   aria-label={t('aiSend')}
                 >
-                  <img src={input.trim() ? sendEnterOn : sendEnterOff} alt="" aria-hidden />
+                  <IconEnter size={22} />
                 </button>
               )}
             </div>
@@ -2017,61 +3372,6 @@ function ImageThumb({ url, title }: { url: string; title?: string }) {
   )
 }
 
-/** Step-row status icons (timeline glyphs: 14px in a 20px slot, 1.6 stroke) */
-function StepIcon({ status }: { status: 'running' | 'done' | 'error' }) {
-  if (status === 'running') {
-    return (
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <path d="M6.5 3.5h11M6.5 20.5h11M8 3.5v3.2c0 2.6 4 4.2 4 5.3 0 1.1 4 2.7 4 5.3v3.2M16 3.5v3.2c0 2.6-4 4.2-4 5.3 0 1.1-4 2.7-4 5.3v3.2" />
-      </svg>
-    )
-  }
-  if (status === 'error') {
-    return (
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <circle cx="12" cy="12" r="9" />
-        <path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" />
-      </svg>
-    )
-  }
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="m8.5 12.4 2.4 2.4 4.6-5" />
-    </svg>
-  )
-}
-
 /** Quiet roll-back action in the message toolbar: restores the deck to before the run's edits */
 function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   const { t: tr } = useI18n()
@@ -2100,85 +3400,55 @@ function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () 
 /** Tool activity group: a single quiet summary row
  *  that auto-opens while tools run, auto-collapses into "Worked · N steps" when they finish,
  *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
-function ToolChipList({ tools }: { tools: ToolActivity[] }) {
+function ToolChipList({
+  tools,
+  onOpenDesign,
+}: {
+  tools: ToolActivity[]
+  onOpenDesign?: (designMd: string) => void
+}) {
   const { t: tr } = useI18n()
-  const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-
-  const toggle = useCallback((j: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(j)) next.delete(j)
-      else next.add(j)
-      return next
-    })
-  }, [])
-
-  const anyRunning = tools.some((tool) => tool.running)
-  const open = userOpen ?? anyRunning
-  const label = anyRunning ? tr('aiGroupWorking') : tr('aiWorkedSteps', { n: tools.length })
-
   return (
-    <div className="ai-work-group">
-      <button
-        type="button"
-        className={`ai-work-group-summary${anyRunning ? ' running' : ''}`}
-        aria-expanded={open}
-        onClick={() => setUserOpen(!open)}
-      >
-        {anyRunning && !open && <span className="ai-tool-chip-spinner" aria-hidden />}
-        <span className="ai-work-group-label">{label}</span>
-        <span className={`ai-tool-chip-caret${open ? ' open' : ''}`} aria-hidden>
-          ›
-        </span>
-      </button>
-      <div className={`ai-work-group-body${open ? ' open' : ''}`}>
-        <div className="ai-work-group-body-inner">
-          {tools.map((tool, j) => {
-            const hasDisplayData = !!(
-              tool.display?.items?.length ||
-              (tool.display?.kind === 'text' && tool.display.text)
-            )
-            const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
-            const isOpen = expanded.has(j)
-            const stepStatus = tool.running ? 'running' : tool.isError ? 'error' : 'done'
-            return (
-              <div key={j} className="ai-step-row">
-                <span className={`ai-step-icon ${stepStatus}`} aria-hidden>
-                  <StepIcon status={stepStatus} />
-                </span>
-                <div className="ai-step-content">
-                  {hasOutput ? (
-                    <button
-                      type="button"
-                      className="ai-step-title clickable"
-                      data-tip={tool.name}
-                      aria-expanded={isOpen}
-                      onClick={() => toggle(j)}
-                    >
-                      {tool.summary}
-                    </button>
-                  ) : (
-                    <span className="ai-step-title" data-tip={tool.name}>
-                      {tool.summary}
-                    </span>
-                  )}
-                  {hasOutput && isOpen && (
-                    <div className="ai-step-detail">
-                      <ToolOutputPanel
-                        name={tool.name}
-                        output={tool.output ?? ''}
-                        display={tool.display}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
+    <PresentationActivityGroup
+      items={tools.map((tool, index) => {
+        const hasDisplayData = !!(
+          tool.display?.items?.length ||
+          (tool.display?.kind === 'text' && tool.display.text)
+        )
+        const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
+        const designMd = extractPresentationDesignDocument(tool.output ?? '')
+        const lifecycle = designMd ? presentationDesignLifecycle(designMd) : undefined
+        return {
+          id: `${index}:${tool.name}`,
+          label: tool.summary,
+          status: tool.running
+            ? ('running' as const)
+            : tool.isError
+              ? ('error' as const)
+              : ('done' as const),
+          tooltip: tool.name,
+          ...(designMd && onOpenDesign
+            ? {
+                label: lifecycle?.label ?? tool.summary,
+                onActivate: () => onOpenDesign(designMd),
+              }
+            : {}),
+          ...(hasOutput && !designMd
+            ? {
+                detail: (
+                  <ToolOutputPanel
+                    name={tool.name}
+                    output={tool.output ?? ''}
+                    display={tool.display}
+                  />
+                ),
+              }
+            : {}),
+        }
+      })}
+      workingLabel={tr('aiGroupWorking')}
+      workedLabel={(count) => tr('aiWorkedSteps', { n: count })}
+    />
   )
 }
 
@@ -2331,6 +3601,12 @@ function ClarifyCard({
             cancelAdvance()
             setOther((p) => ({ ...p, [q.id]: e.target.value }))
           }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || !e.currentTarget.value.trim()) return
+            e.preventDefault()
+            if (isLast) submit()
+            else goTo(qIdx + 1)
+          }}
         />
       </div>
       <div className={`ai-clarify-actions${q.multi ? ' multi' : ''}`}>
@@ -2346,8 +3622,7 @@ function ClarifyCard({
               {t('aiClarifySubmit')}
             </button>
           ) : (
-            /* Only multi-select advances via the filled foot arrow; single-select advances by picking */
-            q.multi && (
+            (q.multi || !!other[q.id]?.trim()) && (
               <button
                 type="button"
                 className="ai-clarify-next"

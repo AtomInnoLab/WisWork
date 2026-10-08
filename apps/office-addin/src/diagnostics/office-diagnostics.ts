@@ -24,15 +24,30 @@ export interface PresentationDiagnosticContext {
 
 const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
+  'design_contract_review_required',
+  'design_contract_prototype_required',
+  'design_contract_production_incomplete',
+  'design_contract_verification_failed',
+  'design_contract_visual_review_failed',
+  'design_contract_invalid_status',
+  'design_contract_review_not_pending',
+  'design_contract_acceptance_mismatch',
+  'design_contract_screenshot_required',
+  'image_fetch_unavailable',
+  'image_limit',
+  'image_mime_unsupported',
+  'invalid_image',
   'invalid_tool_input',
   'office_api_unsupported',
   'office_read_failed',
+  'office_screenshot_unavailable',
   'office_overwrite_required',
   'office_recovery_failed',
   'office_concurrent_change',
   'office_state_uncertain',
   'office_verify_failed',
   'office_write_failed',
+  'office_write_pending',
   'proposal_missing',
   'proposal_stale',
   'presentation_screenshot_waiting',
@@ -60,6 +75,8 @@ const ERROR_CODES = new Set([
   'network_error',
   'provider_unavailable',
   'request_timeout',
+  'session_expired',
+  'transport_stream_budget_exceeded',
 ])
 
 export interface OfficeDiagnosticEvent {
@@ -199,7 +216,12 @@ function safeProperty(value: Record<string, unknown>, property: string): unknown
   }
 }
 
-function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
+function officeIdentifier(value: unknown): string {
+  const normalized = identifier(value, '')
+  return /^[A-Za-z_][A-Za-z0-9_.()-]*$/.test(normalized) ? normalized : ''
+}
+
+export function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
   const result: OfficeDiagnosticMetadata = {}
   const seen = new Set<unknown>()
   let current = error
@@ -213,11 +235,10 @@ function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
       debugInfoValue && typeof debugInfoValue === 'object'
         ? (debugInfoValue as Record<string, unknown>)
         : undefined
-    const code = identifier(safeProperty(value, 'code'), '')
-    const name = identifier(safeProperty(value, 'name'), '')
-    const location = identifier(
+    const code = officeIdentifier(safeProperty(value, 'code'))
+    const name = officeIdentifier(safeProperty(value, 'name'))
+    const location = officeIdentifier(
       debugInfo ? safeProperty(debugInfo, 'errorLocation') : undefined,
-      '',
     )
     if (code && !result.office_error_code) result.office_error_code = code
     if (
@@ -406,7 +427,8 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         ...(presentationStage ? { presentation_stage: presentationStage } : {}),
         duration_ms:
           Number.isFinite(input.durationMs) && input.durationMs! >= 0
-            ? Math.min(600_000, Math.trunc(input.durationMs!))
+            ? // Match the existing Relay diagnostic bound, not a fictitious 10-minute run cap.
+              Math.min(86_400_000, Math.trunc(input.durationMs!))
             : 0,
         requirement_sets: requirements,
         ...(documentContext || sessionContext || context

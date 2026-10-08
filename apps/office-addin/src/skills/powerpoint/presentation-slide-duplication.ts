@@ -271,6 +271,7 @@ export function createPresentationSlideDuplicationSkill(options: Options) {
       explanation?: string,
       signal?: AbortSignal,
       toolName: 'duplicate_slide' | 'execute_office_js' = 'duplicate_slide',
+      validateProduction?: (signal?: AbortSignal) => Promise<boolean>,
     ) {
       const token = epoch
       if (!options.available()) throw Error('presentation_existing_persistence_unavailable')
@@ -367,13 +368,15 @@ export function createPresentationSlideDuplicationSkill(options: Options) {
         validate: async (s) => {
           try {
             await fresh(s)
-            return true
+            return !validateProduction || (await validateProduction(s))
           } catch {
             return false
           }
         },
         execute: async (s) => {
           await fresh(s)
+          if (validateProduction && !(await validateProduction(s)))
+            throw Error('office_concurrent_change')
           const scope = {
             request: options.request,
             documentId,

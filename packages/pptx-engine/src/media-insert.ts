@@ -17,6 +17,11 @@ import { escapeXmlAttr } from './xml-utils'
 import { relsPathFor } from './zip'
 import { appendRawElements, type OpenedPptx } from './index'
 import { nextCNvPrId } from './insert'
+import {
+  collectSlideCreationIds,
+  ensureCreationIdsInXmlBatch,
+  type CreationIdFactory,
+} from './durable-targets'
 
 const R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const IMAGE_REL_TYPE = `${R_NS}/image`
@@ -101,20 +106,35 @@ function ensureDefaultContentType(opened: OpenedPptx, ext: string, mime: string)
   const ct = opened.archive.readText(ctPath)
   if (ct && !new RegExp(`<Default Extension="${ext}"`).test(ct)) {
     const dflt = `<Default Extension="${ext}" ContentType="${mime}"/>`
-    opened.archive.entries.set(ctPath, Buffer.from(ct.replace('</Types>', `${dflt}</Types>`), 'utf8'))
+    opened.archive.entries.set(
+      ctPath,
+      Buffer.from(ct.replace('</Types>', `${dflt}</Types>`), 'utf8'),
+    )
   }
 }
 
 /** New media part: ppt/media/{prefix}N.ext, numbered max + 1 across the whole media dir. */
-function newMediaPart(opened: OpenedPptx, prefix: string, ext: string, bytes: Uint8Array): string {
+function nextMediaPartPath(
+  opened: OpenedPptx,
+  prefix: string,
+  ext: string,
+  reserved = new Set<string>(),
+): string {
   let maxNum = 0
   for (const path of opened.archive.entries.keys()) {
     const m = /^ppt\/media\/[a-zA-Z]+(\d+)\./.exec(path)
     if (m) maxNum = Math.max(maxNum, Number(m[1]))
   }
-  const partPath = `ppt/media/${prefix}${maxNum + 1}.${ext}`
-  opened.archive.entries.set(partPath, bytes)
-  return partPath
+  let n = maxNum + 1
+  while (reserved.has(`ppt/media/${prefix}${n}.${ext}`)) n++
+  return `ppt/media/${prefix}${n}.${ext}`
+}
+
+function planRids(opened: OpenedPptx, slide: Slide, count: number): string[] {
+  const xml = opened.archive.readText(relsPathFor(slide.path)) ?? ''
+  let maxRid = 0
+  for (const m of xml.matchAll(/Id="rId(\d+)"/g)) maxRid = Math.max(maxRid, Number(m[1]))
+  return Array.from({ length: count }, (_, i) => `rId${maxRid + i + 1}`)
 }
 
 /** Append relationships to the slide rels; returns the assigned rIds (in order). */
@@ -162,6 +182,7 @@ export function addMedia(
   opened: OpenedPptx,
   slideIndex: number,
   opts: NewMediaOptions,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide) return null
@@ -169,9 +190,8 @@ export function addMedia(
   const mime = MEDIA_MIME[ext]
   if (!mime) return null
 
-  // 1) media part + Content_Types
-  const mediaPath = newMediaPart(opened, 'media', ext, opts.bytes)
-  ensureDefaultContentType(opened, ext, mime)
+  // Plan package paths without mutation; identity allocation below is the commit boundary.
+  const mediaPath = nextMediaPartPath(opened, 'media', ext)
 
   // 2) Poster frame part (solid color by default)
   const poster = opts.poster ?? {
@@ -179,27 +199,18 @@ export function addMedia(
     ext: 'png',
   }
   const posterExt = poster.ext.toLowerCase()
-  const posterPath = newMediaPart(opened, 'image', posterExt, poster.bytes)
-  ensureDefaultContentType(
-    opened,
-    posterExt,
-    posterExt === 'jpg' || posterExt === 'jpeg' ? 'image/jpeg' : 'image/png',
-  )
+  const posterPath = nextMediaPartPath(opened, 'image', posterExt, new Set([mediaPath]))
 
   // 3) Three relationships: poster image + legacy video/audio + p14 media
   const mediaTarget = `../media/${mediaPath.split('/').pop()}`
-  const [ridPoster, ridLegacy, ridMedia] = appendRels(opened, slide, [
-    { type: IMAGE_REL_TYPE, target: `../media/${posterPath.split('/').pop()}` },
-    { type: opts.kind === 'video' ? VIDEO_REL_TYPE : AUDIO_REL_TYPE, target: mediaTarget },
-    { type: MEDIA_REL_TYPE, target: mediaTarget },
-  ]) as [string, string, string]
+  const [ridPoster, ridLegacy, ridMedia] = planRids(opened, slide, 3)
 
   // 4) <p:pic> fragment (videoFile/audioFile + p14:media extension hung on nvPr)
   const id = nextCNvPrId(slide)
   const name = opts.name ?? `${opts.kind === 'video' ? 'Video' : 'Audio'} ${id}`
   const fileTag = opts.kind === 'video' ? 'a:videoFile' : 'a:audioFile'
   const o = opts.offset
-  const xml =
+  const rawXml =
     `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"/>` +
     '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>' +
     `<p:nvPr><${fileTag} xmlns:r="${R_NS}" r:link="${ridLegacy}"/>` +
@@ -210,7 +221,25 @@ export function addMedia(
     `<p:spPr><a:xfrm><a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/></a:xfrm>` +
     '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
 
-  const r = appendRawElements(opened, slideIndex, [xml])
+  const [xml] = ensureCreationIdsInXmlBatch(
+    [rawXml],
+    identity?.creationIdFactory,
+    collectSlideCreationIds(slide),
+  )
+  opened.archive.entries.set(mediaPath, opts.bytes)
+  opened.archive.entries.set(posterPath, poster.bytes)
+  ensureDefaultContentType(opened, ext, mime)
+  ensureDefaultContentType(
+    opened,
+    posterExt,
+    posterExt === 'jpg' || posterExt === 'jpeg' ? 'image/jpeg' : 'image/png',
+  )
+  appendRels(opened, slide, [
+    { type: IMAGE_REL_TYPE, target: `../media/${posterPath.split('/').pop()}` },
+    { type: opts.kind === 'video' ? VIDEO_REL_TYPE : AUDIO_REL_TYPE, target: mediaTarget },
+    { type: MEDIA_REL_TYPE, target: mediaTarget },
+  ])
+  const r = appendRawElements(opened, slideIndex, [xml!], { preserveCreationIds: true })
   return r ? { slide: r.slide, elementId: r.elementIds[r.elementIds.length - 1]! } : null
 }
 
@@ -235,6 +264,7 @@ export function addModel3d(
   opened: OpenedPptx,
   slideIndex: number,
   opts: NewModel3dOptions,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide) return null
@@ -242,33 +272,41 @@ export function addModel3d(
   const mime = MEDIA_MIME[ext]
   if (!mime) return null
 
-  const modelPath = newMediaPart(opened, 'media', ext, opts.bytes)
-  ensureDefaultContentType(opened, ext, mime)
+  const modelPath = nextMediaPartPath(opened, 'media', ext)
 
   const poster = opts.poster ?? { bytes: solidPng(16, 9, [58, 58, 66]), ext: 'png' }
   const posterExt = poster.ext.toLowerCase()
-  const posterPath = newMediaPart(opened, 'image', posterExt, poster.bytes)
-  ensureDefaultContentType(
-    opened,
-    posterExt,
-    posterExt === 'jpg' || posterExt === 'jpeg' ? 'image/jpeg' : 'image/png',
-  )
+  const posterPath = nextMediaPartPath(opened, 'image', posterExt, new Set([modelPath]))
 
-  const [ridPoster] = appendRels(opened, slide, [
-    { type: IMAGE_REL_TYPE, target: `../media/${posterPath.split('/').pop()}` },
-  ]) as [string]
+  const [ridPoster] = planRids(opened, slide, 1)
 
   const id = nextCNvPrId(slide)
   const name = opts.name ?? `3D Model ${id}`
   const o = opts.offset
-  const xml =
+  const rawXml =
     `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}" descr="${escapeXmlAttr(`aislides-3d:${modelPath}`)}"/>` +
     '<p:cNvPicPr/><p:nvPr/></p:nvPicPr>' +
     `<p:blipFill><a:blip r:embed="${ridPoster}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
     `<p:spPr><a:xfrm><a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/></a:xfrm>` +
     '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
 
-  const r = appendRawElements(opened, slideIndex, [xml])
+  const [xml] = ensureCreationIdsInXmlBatch(
+    [rawXml],
+    identity?.creationIdFactory,
+    collectSlideCreationIds(slide),
+  )
+  opened.archive.entries.set(modelPath, opts.bytes)
+  opened.archive.entries.set(posterPath, poster.bytes)
+  ensureDefaultContentType(opened, ext, mime)
+  ensureDefaultContentType(
+    opened,
+    posterExt,
+    posterExt === 'jpg' || posterExt === 'jpeg' ? 'image/jpeg' : 'image/png',
+  )
+  appendRels(opened, slide, [
+    { type: IMAGE_REL_TYPE, target: `../media/${posterPath.split('/').pop()}` },
+  ])
+  const r = appendRawElements(opened, slideIndex, [xml!], { preserveCreationIds: true })
   return r ? { slide: r.slide, elementId: r.elementIds[r.elementIds.length - 1]! } : null
 }
 

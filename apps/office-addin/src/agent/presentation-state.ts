@@ -1,7 +1,27 @@
+import type { ToolDisplay } from '@wiswork/agent-core'
 import type { OfficeProposal, StructuredProposal } from './proposal-controller.js'
 
 export const MAX_PRESENTATION_EVENTS = 100
 export const MAX_PRESENTATION_TEXT = 12_000
+
+export function presentationProgressLabel(timeline: OfficePresentationTimeline): string {
+  let currentTurnStart = 0
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    if (timeline[index]?.kind !== 'user') continue
+    currentTurnStart = index + 1
+    break
+  }
+  return timeline.slice(currentTurnStart).some((event) => event.kind === 'tool')
+    ? '继续处理中'
+    : '思考中'
+}
+
+export interface OfficeClarificationQuestion {
+  readonly id: string
+  readonly label: string
+  readonly description?: string
+  readonly options: readonly string[]
+}
 
 export type PresentationProposal = OfficeProposal | StructuredProposal
 
@@ -22,17 +42,25 @@ export interface ToolPresentationEvent extends PresentationEventBase {
   readonly name: string
   readonly summary: string
   readonly state: 'running' | 'complete' | 'error'
+  readonly durationMs?: number
+  readonly output?: string
+  readonly display?: ToolDisplay
 }
 
 export interface ProposalPresentationEvent extends PresentationEventBase {
   readonly kind: 'proposal'
   readonly proposal: PresentationProposal
-  readonly state: 'pending' | 'applying' | 'applied' | 'rejected' | 'error'
+  readonly state: 'pending' | 'applying' | 'applied' | 'uncertain' | 'rejected' | 'error'
   readonly error?: string
 }
 
+export interface PhasePresentationEvent extends PresentationEventBase {
+  readonly kind: 'phase'
+  readonly text: string
+}
+
 export type OfficePresentationEvent =
-  TextPresentationEvent | ToolPresentationEvent | ProposalPresentationEvent
+  TextPresentationEvent | ToolPresentationEvent | ProposalPresentationEvent | PhasePresentationEvent
 
 export type OfficePresentationTimeline = readonly OfficePresentationEvent[]
 

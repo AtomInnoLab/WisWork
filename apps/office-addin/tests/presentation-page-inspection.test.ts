@@ -1,4 +1,5 @@
 import { PNG } from 'pngjs'
+import { OFFICE_SCREENSHOT_SOURCE_BYTES } from '@wiswork/agent-core'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BrowserPowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter'
 const png =
@@ -77,7 +78,9 @@ describe('exact imported PowerPoint page inspection', () => {
     expect(slides.load).not.toHaveBeenCalled()
     expect(slides.getItemAt).not.toHaveBeenCalled()
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
-    expect(shapes.load).toHaveBeenCalledWith(expect.objectContaining({ $top: 1001 }))
+    expect(shapes.load).toHaveBeenCalledWith(
+      'items/id,items/name,items/type,items/left,items/top,items/width,items/height',
+    )
     expect(slide.getImageAsBase64).toHaveBeenCalledWith({ width: 960 })
     expect(result).toMatchObject({
       slideId: 'host-page-25',
@@ -132,7 +135,7 @@ describe('exact imported PowerPoint page inspection', () => {
     expect(slides.getItemAt).toHaveBeenCalledTimes(2)
     expect(context.sync).toHaveBeenCalledTimes(5)
   })
-  it('labels an oversized ordinary slide screenshot with its original host page ID', async () => {
+  it('retains native screenshots above preview budget and binds source-limit failures to the host page', async () => {
     const { adapter, slides, slide } = setup()
     const dense = new PNG({ width: 400, height: 200 })
     let seed = 7
@@ -142,9 +145,24 @@ describe('exact imported PowerPoint page inspection', () => {
     }
     Object.assign(slides, { getCount: vi.fn(() => ({ value: 1 })) })
     slides.getItemAt.mockImplementation(() => slide)
-    slide.getImageAsBase64.mockReturnValue({ value: PNG.sync.write(dense).toString('base64') })
+    const source = PNG.sync.write(dense).toString('base64')
+    expect(Buffer.from(source, 'base64').length).toBeGreaterThan(256 * 1024)
+    slide.getImageAsBase64.mockReturnValue({ value: source })
+    await expect(adapter.screenshotSlide(0)).resolves.toEqual({
+      slideId: 'host-page-25',
+      mime: 'image/png',
+      base64: source,
+    })
+    const oversized = new PNG({ width: 1100, height: 1000 })
+    for (let i = 0; i < oversized.data.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+      oversized.data[i] = seed >>> 24
+    }
+    const oversizedBytes = PNG.sync.write(oversized)
+    expect(oversizedBytes.length).toBeGreaterThan(OFFICE_SCREENSHOT_SOURCE_BYTES)
+    slide.getImageAsBase64.mockReturnValue({ value: oversizedBytes.toString('base64') })
     await expect(adapter.screenshotSlide(0)).rejects.toMatchObject({
-      code: 'office_image_too_large',
+      code: 'office_screenshot_unavailable',
       targetSlideId: 'host-page-25',
     })
   })
@@ -156,7 +174,8 @@ describe('exact imported PowerPoint page inspection', () => {
       throw Object.assign(new Error('busy'), { code: 'Timeout' })
     })
     await expect(adapter.screenshotSlide(0)).rejects.toMatchObject({
-      code: 'Timeout',
+      code: 'office_screenshot_unavailable',
+      cause: { code: 'Timeout' },
       targetSlideId: 'host-page-25',
     })
     slide.getImageAsBase64.mockReset().mockImplementationOnce(() => {

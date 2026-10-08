@@ -1,16 +1,24 @@
+mod binding_store;
+
 use axum::{
-    Router,
+    Json, Router,
+    body::{Body, Bytes},
     extract::{
         ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-    routing::get,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures_util::{SinkExt, StreamExt};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
+use binding_store::{Binding, BindingStore};
+use futures_util::{SinkExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use rand::{Rng, distr::Alphanumeric};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -18,6 +26,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -25,6 +34,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
+use tower_http::limit::RequestBodyLimitLayer;
+
+pub use binding_store::BindingStoreError;
 
 pub const OFFICE_ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 const CONTROL_MAX: usize = 16 * 1024;
@@ -35,6 +47,15 @@ const RESPONSE_MAX: usize = 16 * 1024 * 1024;
 const DIAGNOSTIC_MAX: usize = 4 * 1024;
 const DIAGNOSTIC_SESSION_MAX: u16 = 100;
 const PROTOCOL_V2: u64 = 2;
+const PAIRING_RESUME: &str = "pairing-resume.v1";
+const RESUME_CHALLENGE_MAX: Duration = Duration::from_secs(30);
+const IMAGE_REQUEST_MAX: usize = 4 * 1024;
+const IMAGE_RESPONSE_MAX: usize = 10 * 1024 * 1024;
+const IMAGE_TIMEOUT: Duration = Duration::from_secs(15);
+const IMAGE_REDIRECT_MAX: usize = 3;
+const IMAGE_RATE_MAX: usize = 120;
+const IMAGE_RATE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_TRACKED_RESUME_IPS: usize = 10_000;
 const SUPPORTED_CAPABILITIES: &[&str] = &[
     "agent.v1",
     "web-search.v1",
@@ -53,6 +74,9 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "presentation-master-backups.v1",
     "presentation-package-backups.v1",
     "presentation-governance.v1",
+    "image-fetch.v1",
+    "design-document.v1",
+    "enhanced-lease.v1",
 ];
 
 #[derive(Clone)]
@@ -61,14 +85,19 @@ pub struct Config {
     pub session_ttl: Duration,
     pub session_max_ttl: Duration,
     pub request_ttl: Duration,
+    pub agent_request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub max_global_claims: u32,
+    pub max_global_resume_attempts: u32,
     pub diagnostic_window: Duration,
     pub max_diagnostics_per_window: u8,
     pub auth_url: String,
     pub jwks_url: String,
     pub issuer: String,
     pub audience: String,
+    pub binding_database: Option<PathBuf>,
+    pub pairing_resume_enabled: bool,
+    pub resume_challenge_ttl: Duration,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -77,14 +106,19 @@ impl Default for Config {
             session_ttl: Duration::from_secs(1800),
             session_max_ttl: Duration::from_secs(8 * 60 * 60),
             request_ttl: Duration::from_secs(300),
+            agent_request_ttl: Duration::from_secs(30 * 60 + 20),
             max_claim_attempts: 5,
             max_global_claims: 1_000,
+            max_global_resume_attempts: 1_000,
             diagnostic_window: Duration::from_secs(1),
             max_diagnostics_per_window: 10,
             auth_url: "https://auth.wispaper.ai/oidc/me".into(),
             jwks_url: "https://auth.wispaper.ai/oidc/jwks".into(),
             issuer: "https://auth.wispaper.ai/oidc".into(),
             audience: "i9au2rbqzktme4runr9gy".into(),
+            binding_database: None,
+            pairing_resume_enabled: true,
+            resume_challenge_ttl: RESUME_CHALLENGE_MAX,
         }
     }
 }
@@ -99,6 +133,11 @@ struct Inner {
     config: Config,
     http: reqwest::Client,
     auth_slots: Arc<Semaphore>,
+    image_slots: Arc<Semaphore>,
+    image_attempts: Mutex<VecDeque<Instant>>,
+    bindings: BindingStore,
+    #[cfg(test)]
+    fail_approval_delivery: std::sync::atomic::AtomicBool,
 }
 #[derive(Clone)]
 struct Tx {
@@ -118,7 +157,31 @@ struct Pairing {
     requested_capabilities: Vec<String>,
     negotiated_capabilities: Vec<String>,
     negotiated_subject: Option<[u8; 32]>,
-    claimed_subject: Option<[u8; 32]>,
+    features: Vec<String>,
+    negotiated_features: Vec<String>,
+    binding_public_key: Option<[u8; 65]>,
+    pc_subject: Option<[u8; 32]>,
+    pending_binding: Option<PendingBinding>,
+}
+#[derive(Clone)]
+struct PendingBinding {
+    id: String,
+    pc: u64,
+    pc_tx: Tx,
+    subject: [u8; 32],
+    capabilities: Vec<String>,
+    phase: PendingBindingPhase,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingBindingPhase {
+    Offered,
+    CommitSent,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingResult {
+    Ready,
+    Abort,
+    Committed,
 }
 struct Active {
     id: String,
@@ -126,6 +189,13 @@ struct Active {
     bytes: usize,
     deadline: Instant,
     started: bool,
+    pending_tool: Option<PendingTool>,
+    used_tool_calls: VecDeque<String>,
+}
+struct PendingTool {
+    turn_id: String,
+    call_id: String,
+    generation: u64,
 }
 struct Session {
     version: u64,
@@ -147,6 +217,36 @@ struct Session {
     diagnostics: u16,
     diagnostic_window_started: Instant,
     diagnostic_window_count: u8,
+    binding_id: Option<String>,
+}
+struct ResumeChallenge {
+    binding: Binding,
+    challenge: String,
+    expires: Instant,
+}
+struct ExpiredResumeChallenge {
+    binding_hash: [u8; 32],
+    challenge_hash: [u8; 32],
+    expires: Instant,
+}
+struct CompletedBindingOffer {
+    office: u64,
+    binding_id: String,
+    expires: Instant,
+}
+struct OfficeResume {
+    binding: Binding,
+    office: u64,
+    office_tx: Tx,
+    expires: Instant,
+}
+struct PcResume {
+    binding_id: String,
+    pc: u64,
+    pc_tx: Tx,
+    subject: [u8; 32],
+    capabilities: Vec<String>,
+    expires: Instant,
 }
 #[derive(Default)]
 struct Store {
@@ -161,9 +261,28 @@ struct Store {
     connection_sessions: HashMap<u64, HashSet<String>>,
     preauth_attempts: HashMap<IpAddr, (Instant, u8)>,
     global_preauth: (Option<Instant>, u32),
+    resume_challenges: HashMap<u64, ResumeChallenge>,
+    expired_resume_challenges: HashMap<u64, ExpiredResumeChallenge>,
+    completed_binding_offers: HashMap<String, CompletedBindingOffer>,
+    office_resumes: HashMap<u64, OfficeResume>,
+    pc_resumes: HashMap<u64, PcResume>,
+    connection_resume_attempts: HashMap<u64, u8>,
+    resume_attempts: HashMap<IpAddr, (Instant, u8)>,
+    global_resume_attempts: (Option<Instant>, u32),
+    denied_bindings: HashSet<String>,
+    pending_revocations: HashMap<String, [u8; 32]>,
 }
 
 pub fn app(config: Config) -> Router {
+    try_app(config).expect("binding database initialization failed")
+}
+
+pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
+    let bindings = if config.pairing_resume_enabled {
+        BindingStore::open(config.binding_database.as_deref())?
+    } else {
+        BindingStore::disabled()
+    };
     let state = App {
         inner: Arc::new(Inner {
             state: Mutex::new(Store::default()),
@@ -176,21 +295,424 @@ pub fn app(config: Config) -> Router {
                 .build()
                 .expect("fixed HTTP client"),
             auth_slots: Arc::new(Semaphore::new(32)),
+            image_slots: Arc::new(Semaphore::new(16)),
+            image_attempts: Mutex::new(VecDeque::new()),
+            bindings,
+            #[cfg(test)]
+            fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
         }),
     };
-    let sweeper = state.clone();
+    drop(spawn_sweeper(&state));
+    Ok(Router::new()
+        .route("/office-relay", get(upgrade))
+        .route("/office-relay/health", get(|| async { "ok" }))
+        .route(
+            "/office-image-fetch",
+            post(image_fetch).layer(RequestBodyLimitLayer::new(IMAGE_REQUEST_MAX)),
+        )
+        .with_state(state))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageFetchRequest {
+    url: String,
+}
+
+async fn image_fetch(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(request): Json<ImageFetchRequest>,
+) -> Response {
+    image_fetch_with_timeout(app, headers, request, IMAGE_TIMEOUT).await
+}
+
+async fn image_fetch_with_timeout(
+    app: App,
+    headers: HeaderMap,
+    request: ImageFetchRequest,
+    timeout: Duration,
+) -> Response {
+    tokio::time::timeout(timeout, image_fetch_with_auth(app, headers, request))
+        .await
+        .unwrap_or_else(|_| image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable"))
+}
+
+async fn image_fetch_with_auth(
+    app: App,
+    headers: HeaderMap,
+    request: ImageFetchRequest,
+) -> Response {
+    if headers.contains_key(header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty() && value.len() <= 4096)
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Ok(_auth_permit) = app.inner.auth_slots.clone().try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if authenticate_pc(&app, token).await.is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    drop(_auth_permit);
+    if !allow_image_fetch(&app).await {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    match guarded_fetch_image(&app, &request.url).await {
+        Ok((mime, body, permit)) => image_success_response(mime, body, permit),
+        Err(ImageFetchError::Busy) => StatusCode::TOO_MANY_REQUESTS.into_response(),
+        Err(ImageFetchError::Limit) => image_error(StatusCode::PAYLOAD_TOO_LARGE, "image_limit"),
+        Err(ImageFetchError::Mime) => {
+            image_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "image_mime_unsupported")
+        }
+        Err(ImageFetchError::Unavailable) => {
+            image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable")
+        }
+    }
+}
+
+fn image_success_response(
+    mime: &'static str,
+    body: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
+    let bytes = Bytes::from(body);
+    let stream = futures_util::stream::unfold(
+        (bytes, 0usize, permit),
+        |(bytes, offset, permit)| async move {
+            if offset >= bytes.len() {
+                return None;
+            }
+            let end = (offset + CHUNK_MAX).min(bytes.len());
+            Some((
+                Ok::<_, std::convert::Infallible>(bytes.slice(offset..end)),
+                (bytes, end, permit),
+            ))
+        },
+    );
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, mime)],
+        Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+async fn allow_image_fetch(app: &App) -> bool {
+    let now = Instant::now();
+    let mut attempts = app.inner.image_attempts.lock().await;
+    while attempts
+        .front()
+        .is_some_and(|then| now.duration_since(*then) >= IMAGE_RATE_WINDOW)
+    {
+        attempts.pop_front();
+    }
+    if attempts.len() >= IMAGE_RATE_MAX {
+        return false;
+    }
+    attempts.push_back(now);
+    true
+}
+
+fn image_error(status: StatusCode, code: &'static str) -> Response {
+    (status, Json(json!({"error": code}))).into_response()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ImageFetchError {
+    Unavailable,
+    Limit,
+    Mime,
+    Busy,
+}
+
+struct ImageResponse {
+    status: StatusCode,
+    location: Option<String>,
+    mime: Option<String>,
+    declared_size: Option<u64>,
+    chunks: BoxStream<'static, Result<Vec<u8>, ImageFetchError>>,
+}
+
+trait ImageNetwork: Send + Sync {
+    fn resolve(&self, host: String)
+    -> BoxFuture<'static, Result<Vec<SocketAddr>, ImageFetchError>>;
+    fn request(
+        &self,
+        url: reqwest::Url,
+        host: String,
+        addresses: Vec<SocketAddr>,
+    ) -> BoxFuture<'static, Result<ImageResponse, ImageFetchError>>;
+}
+
+struct ReqwestImageNetwork;
+
+impl ImageNetwork for ReqwestImageNetwork {
+    fn resolve(
+        &self,
+        host: String,
+    ) -> BoxFuture<'static, Result<Vec<SocketAddr>, ImageFetchError>> {
+        Box::pin(async move {
+            Ok(tokio::net::lookup_host((host.as_str(), 443))
+                .await
+                .map_err(|_| ImageFetchError::Unavailable)?
+                .collect())
+        })
+    }
+
+    fn request(
+        &self,
+        url: reqwest::Url,
+        host: String,
+        addresses: Vec<SocketAddr>,
+    ) -> BoxFuture<'static, Result<ImageResponse, ImageFetchError>> {
+        Box::pin(async move {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve_to_addrs(&host, &addresses)
+                .build()
+                .map_err(|_| ImageFetchError::Unavailable)?;
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|_| ImageFetchError::Unavailable)?;
+            let status = response.status();
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let mime = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let declared_size = response.content_length();
+            let chunks = futures_util::stream::try_unfold(response, |mut response| async move {
+                Ok(response
+                    .chunk()
+                    .await
+                    .map_err(|_| ImageFetchError::Unavailable)?
+                    .map(|chunk| (chunk.to_vec(), response)))
+            });
+            Ok(ImageResponse {
+                status,
+                location,
+                mime,
+                declared_size,
+                chunks: Box::pin(chunks),
+            })
+        })
+    }
+}
+
+async fn guarded_fetch_image(
+    app: &App,
+    input: &str,
+) -> Result<(&'static str, Vec<u8>, tokio::sync::OwnedSemaphorePermit), ImageFetchError> {
+    guarded_fetch_image_with(app, input, &ReqwestImageNetwork, IMAGE_TIMEOUT).await
+}
+
+async fn guarded_fetch_image_with(
+    app: &App,
+    input: &str,
+    network: &dyn ImageNetwork,
+    timeout: Duration,
+) -> Result<(&'static str, Vec<u8>, tokio::sync::OwnedSemaphorePermit), ImageFetchError> {
+    let permit = app
+        .inner
+        .image_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ImageFetchError::Busy)?;
+    let (mime, body) = tokio::time::timeout(timeout, fetch_image_with_network(input, network))
+        .await
+        .map_err(|_| ImageFetchError::Unavailable)??;
+    Ok((mime, body, permit))
+}
+
+async fn fetch_image_with_network(
+    input: &str,
+    network: &dyn ImageNetwork,
+) -> Result<(&'static str, Vec<u8>), ImageFetchError> {
+    let mut url = validate_image_url(input)?;
+    for redirects in 0..=IMAGE_REDIRECT_MAX {
+        let host = url
+            .host_str()
+            .ok_or(ImageFetchError::Unavailable)?
+            .trim_matches(['[', ']'])
+            .to_owned();
+        let addresses = network.resolve(host.clone()).await?;
+        validate_resolved_addresses(&addresses)?;
+        let mut response = network.request(url.clone(), host, addresses).await?;
+        if response.status.is_redirection() {
+            if redirects == IMAGE_REDIRECT_MAX {
+                return Err(ImageFetchError::Unavailable);
+            }
+            let location = response.location.ok_or(ImageFetchError::Unavailable)?;
+            url = validate_image_url(
+                url.join(&location)
+                    .map_err(|_| ImageFetchError::Unavailable)?
+                    .as_str(),
+            )?;
+            continue;
+        }
+        if response.status != StatusCode::OK {
+            return Err(ImageFetchError::Unavailable);
+        }
+        let mime = accepted_image_mime(response.mime.as_deref().ok_or(ImageFetchError::Mime)?)?;
+        validate_declared_image_size(response.declared_size)?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunks.next().await {
+            append_image_chunk(&mut body, &chunk?)?;
+        }
+        return Ok((mime, body));
+    }
+    Err(ImageFetchError::Unavailable)
+}
+
+fn validate_resolved_addresses(addresses: &[SocketAddr]) -> Result<(), ImageFetchError> {
+    if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err(ImageFetchError::Unavailable);
+    }
+    Ok(())
+}
+
+fn accepted_image_mime(value: &str) -> Result<&'static str, ImageFetchError> {
+    let value = value.split(';').next().map(str::trim).unwrap_or_default();
+    if value.eq_ignore_ascii_case("image/png") {
+        Ok("image/png")
+    } else if value.eq_ignore_ascii_case("image/jpeg") {
+        Ok("image/jpeg")
+    } else {
+        Err(ImageFetchError::Mime)
+    }
+}
+
+fn validate_declared_image_size(size: Option<u64>) -> Result<(), ImageFetchError> {
+    if size.is_some_and(|size| size > IMAGE_RESPONSE_MAX as u64) {
+        return Err(ImageFetchError::Limit);
+    }
+    Ok(())
+}
+
+fn append_image_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), ImageFetchError> {
+    if body
+        .len()
+        .checked_add(chunk.len())
+        .is_none_or(|size| size > IMAGE_RESPONSE_MAX)
+    {
+        return Err(ImageFetchError::Limit);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn validate_image_url(input: &str) -> Result<reqwest::Url, ImageFetchError> {
+    let url = reqwest::Url::parse(input).map_err(|_| ImageFetchError::Unavailable)?;
+    if url.scheme() != "https"
+        || url.port().is_some_and(|port| port != 443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(ImageFetchError::Unavailable);
+    }
+    Ok(url)
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let value = u32::from(ip);
+            [
+                ("0.0.0.0", 8),
+                ("10.0.0.0", 8),
+                ("100.64.0.0", 10),
+                ("127.0.0.0", 8),
+                ("169.254.0.0", 16),
+                ("172.16.0.0", 12),
+                ("192.0.0.0", 24),
+                ("192.0.2.0", 24),
+                ("192.88.99.0", 24),
+                ("192.168.0.0", 16),
+                ("198.18.0.0", 15),
+                ("198.51.100.0", 24),
+                ("203.0.113.0", 24),
+                ("224.0.0.0", 4),
+                ("240.0.0.0", 4),
+            ]
+            .iter()
+            .all(|(network, prefix)| {
+                let network = u32::from(
+                    network
+                        .parse::<std::net::Ipv4Addr>()
+                        .expect("constant IPv4"),
+                );
+                let mask = u32::MAX << (32 - prefix);
+                (value & mask) != (network & mask)
+            })
+        }
+        IpAddr::V6(ip) => {
+            let value = u128::from(ip);
+            ip.to_ipv4_mapped().is_none()
+                && [
+                    (0_u128, 3_u32),
+                    (
+                        u128::from_be_bytes([0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        23,
+                    ),
+                    (
+                        u128::from_be_bytes([
+                            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        ]),
+                        32,
+                    ),
+                    (
+                        u128::from_be_bytes([0x20, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        16,
+                    ),
+                    (
+                        u128::from_be_bytes([0x3f, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        20,
+                    ),
+                    (
+                        u128::from_be_bytes([0x5f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        16,
+                    ),
+                ]
+                .iter()
+                .all(|(network, prefix)| {
+                    let mask = u128::MAX << (128 - prefix);
+                    (value & mask) != (network & mask)
+                })
+                && value >> 125 == 0b001
+        }
+    }
+}
+
+fn spawn_sweeper(state: &App) -> tokio::task::JoinHandle<()> {
+    let sweeper = Arc::downgrade(&state.inner);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
-            let mut store = sweeper.inner.state.lock().await;
-            expire(&mut store, sweeper.inner.config.pairing_ttl);
+            let Some(inner) = sweeper.upgrade() else {
+                break;
+            };
+            let mut store = inner.state.lock().await;
+            expire(&inner, &mut store);
         }
-    });
-    Router::new()
-        .route("/office-relay", get(upgrade))
-        .route("/office-relay/health", get(|| async { "ok" }))
-        .with_state(state)
+    })
 }
 
 async fn upgrade(
@@ -623,7 +1145,7 @@ fn pc_offered_capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'stat
     if values.len() <= 16 {
         return capabilities(m);
     }
-    if values.len() != SUPPORTED_CAPABILITIES.len() {
+    if values.len() > SUPPORTED_CAPABILITIES.len() {
         return Err("invalid_frame");
     }
     let mut seen = HashSet::new();
@@ -643,7 +1165,7 @@ fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
         .get("capabilities")
         .and_then(Value::as_array)
         .ok_or("invalid_frame")?;
-    if values.is_empty() || values.len() > 16 {
+    if values.is_empty() || values.len() > SUPPORTED_CAPABILITIES.len() {
         return Err("invalid_frame");
     }
     let mut result = Vec::with_capacity(values.len());
@@ -666,6 +1188,60 @@ fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
     Ok(result)
 }
 
+fn resume_capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
+    let values = m
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or("invalid_frame")?;
+    if values.is_empty() || values.len() > SUPPORTED_CAPABILITIES.len() {
+        return Err("invalid_frame");
+    }
+    let mut result = Vec::with_capacity(values.len());
+    let mut seen = HashSet::with_capacity(values.len());
+    for value in values {
+        let name = value.as_str().ok_or("invalid_frame")?;
+        if !SUPPORTED_CAPABILITIES.contains(&name) || !seen.insert(name) {
+            return Err("invalid_frame");
+        }
+        result.push(name.to_owned());
+    }
+    Ok(result)
+}
+
+fn features(m: &Map<String, Value>, enabled: bool) -> Result<Vec<String>, &'static str> {
+    let values = m
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or("invalid_frame")?;
+    if values.len() > 1 {
+        return Err("invalid_frame");
+    }
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        let name = value.as_str().ok_or("invalid_frame")?;
+        if name != PAIRING_RESUME || !seen.insert(name) {
+            return Err("invalid_frame");
+        }
+        if enabled && name == PAIRING_RESUME {
+            result.push(name.to_owned());
+        }
+    }
+    Ok(result)
+}
+
+fn binding_public_key(m: &Map<String, Value>) -> Result<[u8; 65], &'static str> {
+    let encoded = string(m, "binding_public_key")?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "invalid_frame")?;
+    let key: [u8; 65] = decoded.try_into().map_err(|_| "invalid_frame")?;
+    if key[0] != 4 || VerifyingKey::from_sec1_bytes(&key).is_err() {
+        return Err("invalid_frame");
+    }
+    Ok(key)
+}
+
 async fn process(
     app: &App,
     conn: u64,
@@ -681,7 +1257,14 @@ async fn process(
     }
     let kind = string(&map, "type")?;
     if text.len() > CONTROL_MAX
-        && !matches!(kind, "office.request" | "office.diagnostic" | "pc.chunk")
+        && !matches!(
+            kind,
+            "office.request"
+                | "office.diagnostic"
+                | "pc.chunk"
+                | "pc.tool_call"
+                | "office.tool_result"
+        )
     {
         return Err("frame_too_large");
     }
@@ -693,15 +1276,37 @@ async fn process(
     }
     match kind {
         "office.create" => create(app, conn, tx, origin, peer, map).await,
-        "office.resume" => resume_office(app, conn, tx, origin, map).await,
+        "office.resume" if map.contains_key("session_id") => {
+            resume_office(app, conn, tx, origin, map).await
+        }
         "office.leave" => leave_office(app, conn, origin, map).await,
+        "office.resume" => office_resume(app, conn, tx, origin, peer, map).await,
+        "office.prove" if app.inner.config.pairing_resume_enabled => {
+            office_prove(app, conn, tx, map).await
+        }
+        "office.binding_ready" if app.inner.config.pairing_resume_enabled => {
+            office_binding_result(app, conn, map, BindingResult::Ready).await
+        }
+        "office.binding_abort" if app.inner.config.pairing_resume_enabled => {
+            office_binding_result(app, conn, map, BindingResult::Abort).await
+        }
+        "office.binding_committed" if app.inner.config.pairing_resume_enabled => {
+            office_binding_result(app, conn, map, BindingResult::Committed).await
+        }
         "pc.negotiate" => negotiate(app, tx, subject.ok_or("auth_required")?, map).await,
         "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
-        "pc.resume" => resume_pc(app, conn, tx, subject.ok_or("auth_required")?, map).await,
+        "pc.resume" if map.contains_key("session_id") => {
+            resume_pc(app, conn, tx, subject.ok_or("auth_required")?, map).await
+        }
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
+        "pc.resume" => pc_resume(app, conn, tx, subject.ok_or("auth_required")?, map).await,
+        "pc.revoke_binding" if app.inner.config.pairing_resume_enabled => {
+            revoke_binding(app, conn, tx, subject.ok_or("auth_required")?, map).await
+        }
         "office.request" => request(app, conn, peer, map).await,
         "office.cancel" => cancel(app, conn, map).await,
+        "office.tool_result" => tool_result(app, conn, map).await,
         "office.diagnostic" => {
             if let Err(code) = diagnostic(app, conn, tx, map, text.len()).await {
                 diagnostic_response(
@@ -713,6 +1318,8 @@ async fn process(
         }
         "pc.chunk" => chunk(app, conn, map).await,
         "pc.start" => start(app, conn, map).await,
+        "pc.session_state" => session_state(app, conn, map).await,
+        "pc.tool_call" => tool_call(app, conn, map).await,
         "pc.done" => done(app, conn, map).await,
         "pc.error" => pc_error(app, conn, map).await,
         _ => Err("unknown_type"),
@@ -725,21 +1332,33 @@ async fn negotiate(
     subject: [u8; 32],
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
-    if version(&m)? != PROTOCOL_V2
-        || !exact(
-            &m,
-            &["version", "type", "verification_code", "capabilities"],
-        )
-    {
+    let enhanced = m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &[
+            "version",
+            "type",
+            "verification_code",
+            "capabilities",
+            "features",
+        ]
+    } else {
+        &["version", "type", "verification_code", "capabilities"]
+    };
+    if version(&m)? != PROTOCOL_V2 || !exact(&m, expected) {
         return Err("invalid_frame");
     }
     let offered = pc_offered_capabilities(&m)?;
+    let offered_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
     let code = string(&m, "verification_code")?;
     if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("invalid_code");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     if store
         .global_claims
         .0
@@ -785,10 +1404,20 @@ async fn negotiate(
         return Err("claim_limit");
     }
     pairing.negotiated_capabilities.clone_from(&negotiated);
+    pairing.negotiated_features = pairing
+        .features
+        .iter()
+        .filter(|name| offered_features.contains(name))
+        .cloned()
+        .collect();
     pairing.negotiated_subject = Some(subject);
     send(
         tx,
-        json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated}),
+        if enhanced {
+            json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated,"features":pairing.negotiated_features})
+        } else {
+            json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated})
+        },
     );
     if let Some(attempts) = store.claim_attempts.get_mut(&subject) {
         attempts.1 = attempts.1.saturating_sub(1);
@@ -805,7 +1434,17 @@ async fn create(
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
     let protocol = version(&m)?;
-    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+    let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &[
+            "version",
+            "type",
+            "host",
+            "capabilities",
+            "features",
+            "binding_public_key",
+        ]
+    } else if protocol == PROTOCOL_V2 {
         &["version", "type", "host", "capabilities"]
     } else {
         &["version", "type", "host"]
@@ -817,6 +1456,16 @@ async fn create(
         capabilities(&m)?
     } else {
         vec!["agent.v1".to_owned()]
+    };
+    let requested_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
+    let public_key = if enhanced {
+        Some(binding_public_key(&m)?)
+    } else {
+        None
     };
     let host = string(&m, "host")?;
     if !matches!(host, "Word" | "Excel" | "PowerPoint") {
@@ -839,7 +1488,7 @@ async fn create(
         return Err("unsupported_host");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let per_connection = store.connection_pairings.entry(conn).or_default();
     if *per_connection >= 4 {
         return Err("pairing_limit");
@@ -892,13 +1541,21 @@ async fn create(
         requested_capabilities,
         negotiated_capabilities: Vec::new(),
         negotiated_subject: None,
-        claimed_subject: None,
+        features: requested_features.clone(),
+        negotiated_features: Vec::new(),
+        binding_public_key: public_key,
+        pc_subject: None,
+        pending_binding: None,
     };
     store.codes.insert(code.clone(), id.clone());
     store.pairings.insert(id.clone(), pairing);
     send(
         tx,
-        json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()}),
+        if enhanced {
+            json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs(),"features":requested_features})
+        } else {
+            json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()})
+        },
     );
     Ok(())
 }
@@ -911,7 +1568,16 @@ async fn claim(
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
     let protocol = version(&m)?;
-    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+    let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &[
+            "version",
+            "type",
+            "verification_code",
+            "capabilities",
+            "features",
+        ]
+    } else if protocol == PROTOCOL_V2 {
         &["version", "type", "verification_code", "capabilities"]
     } else {
         &["version", "type", "verification_code"]
@@ -924,12 +1590,17 @@ async fn claim(
     } else {
         vec!["agent.v1".to_owned()]
     };
+    let offered_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
     let code = string(&m, "verification_code")?;
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("invalid_code");
     }
     let mut s = app.inner.state.lock().await;
-    expire(&mut s, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut s);
     let negotiated_claim = s
         .codes
         .get(code)
@@ -942,6 +1613,13 @@ async fn claim(
                         .requested_capabilities
                         .iter()
                         .filter(|name| offered.contains(name))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                && pairing.negotiated_features
+                    == pairing
+                        .features
+                        .iter()
+                        .filter(|name| offered_features.contains(name))
                         .cloned()
                         .collect::<Vec<_>>()
         });
@@ -994,6 +1672,12 @@ async fn claim(
         .filter(|name| offered.contains(name))
         .cloned()
         .collect();
+    let negotiated_features: Vec<_> = p
+        .features
+        .iter()
+        .filter(|name| offered_features.contains(name))
+        .cloned()
+        .collect();
     if negotiated_capabilities.is_empty() {
         return Err("capability_not_negotiated");
     }
@@ -1005,11 +1689,14 @@ async fn claim(
     }
     p.pc = Some((conn, tx.clone()));
     p.negotiated_capabilities = negotiated_capabilities;
+    p.negotiated_features = negotiated_features;
+    p.pc_subject = Some(subject);
     p.negotiated_subject = None;
-    p.claimed_subject = Some(subject);
     send(
         tx,
-        if protocol == PROTOCOL_V2 {
+        if enhanced {
+            json!({"version":protocol,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs(),"capabilities":p.negotiated_capabilities,"features":p.negotiated_features})
+        } else if protocol == PROTOCOL_V2 {
             json!({"version":protocol,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs(),"capabilities":p.negotiated_capabilities})
         } else {
             json!({"version":1,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs()})
@@ -1023,9 +1710,17 @@ async fn claim(
     Ok(())
 }
 
-async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result<(), &'static str> {
+async fn approve(
+    app: &App,
+    conn: u64,
+    _tx: &Tx,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
     let protocol = version(&m)?;
-    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+    let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &["version", "type", "pairing_id", "capabilities", "features"]
+    } else if protocol == PROTOCOL_V2 {
         &["version", "type", "pairing_id", "capabilities"]
     } else {
         &["version", "type", "pairing_id"]
@@ -1039,8 +1734,13 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     } else {
         vec!["agent.v1".to_owned()]
     };
+    let approved_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
     let mut s = app.inner.state.lock().await;
-    expire(&mut s, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut s);
     if s.sessions.len() >= 10_000 {
         return Err("relay_busy");
     }
@@ -1051,68 +1751,938 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     if approved_capabilities != pending.negotiated_capabilities {
         return Err("capability_not_negotiated");
     }
+    if approved_features != pending.negotiated_features
+        || (!pending.negotiated_features.is_empty() && !enhanced)
+    {
+        return Err("invalid_frame");
+    }
+    if pending.negotiated_features == [PAIRING_RESUME] {
+        if pending.pending_binding.is_some() {
+            return Err("invalid_pairing");
+        }
+        let binding_id = token();
+        let office_tx = pending.office_tx.clone();
+        let approved_pc = pending.pc.clone().ok_or("peer_unavailable")?;
+        let approved_subject = pending.pc_subject.ok_or("auth_required")?;
+        try_send(
+            &office_tx,
+            json!({
+                "version": PROTOCOL_V2,
+                "type": "office.binding_offer",
+                "pairing_id": id,
+                "binding_id": binding_id,
+                "capabilities": approved_capabilities,
+                "features": [PAIRING_RESUME],
+            }),
+        )
+        .map_err(|_| "peer_unavailable")?;
+        let pairing = s.pairings.get_mut(&id).ok_or("invalid_pairing")?;
+        pairing.pending_binding = Some(PendingBinding {
+            id: binding_id,
+            pc: approved_pc.0,
+            pc_tx: approved_pc.1,
+            subject: approved_subject,
+            capabilities: approved_capabilities,
+            phase: PendingBindingPhase::Offered,
+        });
+        let code = pairing.code.clone();
+        s.codes.remove(&code);
+        return Ok(());
+    }
     let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
+    establish_pairing_session(&app.inner, &mut s, p, None, false, None, None)
+}
+
+async fn office_binding_result(
+    app: &App,
+    conn: u64,
+    m: Map<String, Value>,
+    result: BindingResult,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2 || !exact(&m, &["version", "type", "pairing_id", "binding_id"]) {
+        return Err("invalid_frame");
+    }
+    let pairing_id = string(&m, "pairing_id")?.to_owned();
+    let binding_id = string(&m, "binding_id")?.to_owned();
+    if !valid_token(&pairing_id) || !valid_token(&binding_id) {
+        return Err("invalid_pairing");
+    }
+    let mut store = app.inner.state.lock().await;
+    if store
+        .completed_binding_offers
+        .get(&pairing_id)
+        .is_some_and(|completed| {
+            completed.office == conn
+                && completed.binding_id == binding_id
+                && completed.expires > Instant::now()
+        })
+    {
+        return Ok(());
+    }
+    let pending = store.pairings.get(&pairing_id).ok_or("invalid_pairing")?;
+    let approved = pending.pending_binding.as_ref().ok_or("invalid_pairing")?;
+    if pending.office != conn
+        || pending.version != PROTOCOL_V2
+        || approved.id != binding_id
+        || pending.pc.as_ref().map(|pc| pc.0) != Some(approved.pc)
+        || pending.pc_subject != Some(approved.subject)
+        || pending.negotiated_capabilities != approved.capabilities
+        || pending.negotiated_features != [PAIRING_RESUME]
+    {
+        return Err("invalid_pairing");
+    }
+    let approved = approved.clone();
+    let pending_expires = pending.expires;
+    let office_tx = pending.office_tx.clone();
+    let public_key = pending.binding_public_key.ok_or("invalid_frame")?;
+    let host = pending.host.clone();
+    if pending_expires <= Instant::now() {
+        let pairing = store
+            .pairings
+            .remove(&pairing_id)
+            .ok_or("invalid_pairing")?;
+        let committed = approved.phase == PendingBindingPhase::CommitSent;
+        return fallback_staged_pairing(&app.inner, &mut store, pairing, binding_id, committed);
+    }
+    match result {
+        BindingResult::Abort => {
+            let pairing = store
+                .pairings
+                .remove(&pairing_id)
+                .ok_or("invalid_pairing")?;
+            fallback_staged_pairing(
+                &app.inner,
+                &mut store,
+                pairing,
+                binding_id,
+                approved.phase == PendingBindingPhase::CommitSent,
+            )
+        }
+        BindingResult::Ready if approved.phase == PendingBindingPhase::CommitSent => {
+            if try_send(
+                &office_tx,
+                json!({"version":PROTOCOL_V2,"type":"office.binding_commit","pairing_id":pairing_id,"binding_id":binding_id}),
+            )
+            .is_err()
+            {
+                let pairing = store
+                    .pairings
+                    .remove(&pairing_id)
+                    .ok_or("invalid_pairing")?;
+                return fallback_staged_pairing(
+                    &app.inner,
+                    &mut store,
+                    pairing,
+                    binding_id,
+                    true,
+                );
+            }
+            Ok(())
+        }
+        BindingResult::Ready => {
+            let binding = Binding {
+                id: binding_id.clone(),
+                subject: approved.subject,
+                public_key,
+                host: host.clone(),
+                origin: OFFICE_ORIGIN.to_owned(),
+                capabilities: approved.capabilities.clone(),
+            };
+            if app.inner.bindings.enroll_pending(&binding).is_err() {
+                let pairing = store
+                    .pairings
+                    .remove(&pairing_id)
+                    .ok_or("invalid_pairing")?;
+                return fallback_staged_pairing(&app.inner, &mut store, pairing, binding_id, false);
+            }
+            let pairing = store
+                .pairings
+                .get_mut(&pairing_id)
+                .ok_or("invalid_pairing")?;
+            pairing
+                .pending_binding
+                .as_mut()
+                .ok_or("invalid_pairing")?
+                .phase = PendingBindingPhase::CommitSent;
+            if try_send(
+                &pairing.office_tx,
+                json!({"version":PROTOCOL_V2,"type":"office.binding_commit","pairing_id":pairing_id,"binding_id":binding_id}),
+            )
+            .is_err()
+            {
+                let pairing = store
+                    .pairings
+                    .remove(&pairing_id)
+                    .ok_or("invalid_pairing")?;
+                return fallback_staged_pairing(
+                    &app.inner,
+                    &mut store,
+                    pairing,
+                    binding_id,
+                    true,
+                );
+            }
+            Ok(())
+        }
+        BindingResult::Committed if approved.phase == PendingBindingPhase::CommitSent => {
+            let pairing = store
+                .pairings
+                .remove(&pairing_id)
+                .ok_or("invalid_pairing")?;
+            remember_completed_offer(&app.inner, &mut store, pairing_id, conn, binding_id.clone());
+            establish_pairing_session(
+                &app.inner,
+                &mut store,
+                pairing,
+                Some(binding_id),
+                true,
+                None,
+                Some(approved.subject),
+            )
+        }
+        BindingResult::Committed => Err("invalid_pairing"),
+    }
+}
+
+fn fallback_staged_pairing(
+    inner: &Inner,
+    store: &mut Store,
+    pairing: Pairing,
+    binding_id: String,
+    committed: bool,
+) -> Result<(), &'static str> {
+    remember_completed_offer(
+        inner,
+        store,
+        pairing.id.clone(),
+        pairing.office,
+        binding_id.clone(),
+    );
+    if committed {
+        compensate_binding(inner, store, &pairing, Some(&binding_id));
+    }
+    let abort_frame = json!({
+        "version": PROTOCOL_V2,
+        "type": "office.binding_aborted",
+        "pairing_id": pairing.id,
+        "binding_id": binding_id,
+    });
+    establish_pairing_session(inner, store, pairing, None, true, Some(abort_frame), None)
+}
+
+fn establish_pairing_session(
+    inner: &Inner,
+    store: &mut Store,
+    pairing: Pairing,
+    mut remembered_binding: Option<String>,
+    mut explicit_features: bool,
+    mut abort_frame: Option<Value>,
+    activate_subject: Option<[u8; 32]>,
+) -> Result<(), &'static str> {
+    let pc_subject = pairing.pc_subject.ok_or("auth_required")?;
+    store.codes.remove(&pairing.code);
+    if store.sessions.len() >= 10_000 {
+        compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+        abort_committed_binding(&pairing, remembered_binding.as_deref());
+        send_pending_abort(&pairing, abort_frame.as_ref());
+        terminate_pairing(&pairing);
+        return Err("relay_busy");
+    }
+    let approved_pc = if let Some(approved) = pairing.pending_binding.as_ref() {
+        if pairing.pc.as_ref().map(|pc| pc.0) != Some(approved.pc)
+            || pairing.pc_subject != Some(approved.subject)
+            || pairing.negotiated_capabilities != approved.capabilities
+        {
+            compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+            abort_committed_binding(&pairing, remembered_binding.as_deref());
+            send_pending_abort(&pairing, abort_frame.as_ref());
+            terminate_pairing(&pairing);
+            return Err("invalid_pairing");
+        }
+        Some((approved.pc, approved.pc_tx.clone()))
+    } else {
+        pairing.pc.clone()
+    };
+    let Some((pc_conn, pc_tx)) = approved_pc else {
+        compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+        abort_committed_binding(&pairing, remembered_binding.as_deref());
+        send_pending_abort(&pairing, abort_frame.as_ref());
+        terminate_pairing(&pairing);
+        return Err("peer_unavailable");
+    };
+    let pc_sender = pc_tx.sender.clone();
+    let office_sender = pairing.office_tx.sender.clone();
+    let pc_permit = match pc_sender.try_reserve() {
+        Ok(permit) => permit,
+        Err(_) => {
+            compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+            abort_committed_binding(&pairing, remembered_binding.as_deref());
+            send_pending_abort(&pairing, abort_frame.as_ref());
+            terminate_pairing(&pairing);
+            return Err("peer_unavailable");
+        }
+    };
+    let office_message_count = if abort_frame.is_some() || activate_subject.is_some() {
+        2
+    } else {
+        1
+    };
+    let mut office_permits = match office_sender.try_reserve_many(office_message_count) {
+        Ok(permits) => permits,
+        Err(_) => {
+            compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+            abort_committed_binding(&pairing, remembered_binding.as_deref());
+            send_pending_abort(&pairing, abort_frame.as_ref());
+            terminate_pairing(&pairing);
+            return Err("peer_unavailable");
+        }
+    };
     let sid = token();
     let oc = token();
     let pc = token();
+    let expires = inner.config.session_ttl.min(inner.config.session_max_ttl);
+    let now = Instant::now();
+    #[cfg(test)]
+    let fail_delivery = inner.fail_approval_delivery.swap(false, Ordering::SeqCst);
+    #[cfg(not(test))]
+    let fail_delivery = false;
+    if fail_delivery {
+        drop(pc_permit);
+        drop(office_permits);
+        compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+        abort_committed_binding(&pairing, remembered_binding.as_deref());
+        send_pending_abort(&pairing, abort_frame.as_ref());
+        terminate_pairing(&pairing);
+        return Err("peer_unavailable");
+    }
+    if let (Some(binding_id), Some(subject)) = (remembered_binding.as_deref(), activate_subject)
+        && !matches!(
+            inner.bindings.activate_pending(binding_id, &subject),
+            Ok(true)
+        )
+    {
+        let binding_id = binding_id.to_owned();
+        compensate_binding(inner, store, &pairing, Some(&binding_id));
+        abort_frame = Some(json!({
+            "version": PROTOCOL_V2,
+            "type": "office.binding_aborted",
+            "pairing_id": pairing.id,
+            "binding_id": binding_id,
+        }));
+        remembered_binding = None;
+        explicit_features = true;
+    }
+    let pc_approved = if let Some(binding_id) = remembered_binding.as_ref() {
+        json!({"version":pairing.version,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
+    } else if pairing.version == PROTOCOL_V2 && explicit_features {
+        json!({"version":pairing.version,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[]})
+    } else if pairing.version == PROTOCOL_V2 {
+        json!({"version":pairing.version,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities})
+    } else {
+        json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})
+    };
+    let office_approved = if let Some(binding_id) = remembered_binding.as_ref() {
+        json!({"version":pairing.version,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
+    } else if pairing.version == PROTOCOL_V2 && explicit_features {
+        json!({"version":pairing.version,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[]})
+    } else if pairing.version == PROTOCOL_V2 {
+        json!({"version":pairing.version,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities})
+    } else {
+        json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})
+    };
+    if let Some(abort_frame) = abort_frame {
+        office_permits
+            .next()
+            .expect("reserved binding abort permit")
+            .send(Message::Text(abort_frame.to_string().into()));
+    }
+    pc_permit.send(Message::Text(pc_approved.to_string().into()));
+    office_permits
+        .next()
+        .expect("reserved Office approval permit")
+        .send(Message::Text(office_approved.to_string().into()));
+    store
+        .connection_sessions
+        .entry(pairing.office)
+        .or_default()
+        .insert(sid.clone());
+    store
+        .connection_sessions
+        .entry(pc_conn)
+        .or_default()
+        .insert(sid.clone());
+    store.sessions.insert(
+        sid,
+        Session {
+            version: pairing.version,
+            host: pairing.host,
+            office: pairing.office,
+            office_tx: pairing.office_tx,
+            pc: pc_conn,
+            pc_tx,
+            office_cap: oc,
+            pc_cap: pc,
+            expires: now + expires,
+            absolute_expires: now + inner.config.session_max_ttl,
+            resume_until: None,
+            pc_resume_until: None,
+            pc_subject,
+            active: None,
+            used_requests: VecDeque::new(),
+            capabilities: pairing.negotiated_capabilities,
+            diagnostics: 0,
+            diagnostic_window_started: now,
+            diagnostic_window_count: 0,
+            binding_id: remembered_binding,
+        },
+    );
+    Ok(())
+}
+
+fn compensate_binding(
+    inner: &Inner,
+    store: &mut Store,
+    pairing: &Pairing,
+    binding_id: Option<&str>,
+) {
+    let subject = pairing
+        .pending_binding
+        .as_ref()
+        .map(|pending| pending.subject)
+        .or(pairing.pc_subject);
+    if let (Some(binding_id), Some(subject)) = (binding_id, subject)
+        && !matches!(inner.bindings.revoke(binding_id, &subject), Ok(true))
+    {
+        store.denied_bindings.insert(binding_id.to_owned());
+        store
+            .pending_revocations
+            .insert(binding_id.to_owned(), subject);
+    }
+}
+
+fn abort_committed_binding(pairing: &Pairing, binding_id: Option<&str>) {
+    if let Some(binding_id) = binding_id {
+        send(
+            &pairing.office_tx,
+            json!({
+                "version": PROTOCOL_V2,
+                "type": "office.binding_aborted",
+                "pairing_id": pairing.id,
+                "binding_id": binding_id,
+            }),
+        );
+    }
+}
+
+fn send_pending_abort(pairing: &Pairing, abort_frame: Option<&Value>) {
+    if let Some(abort_frame) = abort_frame {
+        send(&pairing.office_tx, abort_frame.clone());
+    }
+}
+
+fn terminate_pairing(pairing: &Pairing) {
+    pairing.office_tx.failed.notify_one();
+    if let Some(approved) = pairing.pending_binding.as_ref() {
+        approved.pc_tx.failed.notify_one();
+    } else if let Some((_, pc_tx)) = pairing.pc.as_ref() {
+        pc_tx.failed.notify_one();
+    }
+}
+
+fn remember_completed_offer(
+    inner: &Inner,
+    store: &mut Store,
+    pairing_id: String,
+    office: u64,
+    binding_id: String,
+) {
+    if store.completed_binding_offers.len() >= 10_000 {
+        store
+            .completed_binding_offers
+            .retain(|_, completed| completed.expires > Instant::now());
+    }
+    if store.completed_binding_offers.len() >= 10_000
+        && let Some(oldest) = store
+            .completed_binding_offers
+            .iter()
+            .min_by_key(|(_, completed)| completed.expires)
+            .map(|(pairing_id, _)| pairing_id.clone())
+    {
+        store.completed_binding_offers.remove(&oldest);
+    }
+    store.completed_binding_offers.insert(
+        pairing_id,
+        CompletedBindingOffer {
+            office,
+            binding_id,
+            expires: Instant::now() + inner.config.pairing_ttl,
+        },
+    );
+}
+
+async fn office_resume(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    origin: Option<&str>,
+    peer: IpAddr,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if !app.inner.config.pairing_resume_enabled
+        || version(&m)? != PROTOCOL_V2
+        || !exact(
+            &m,
+            &["version", "type", "binding_id", "host", "capabilities"],
+        )
+        || origin != Some(OFFICE_ORIGIN)
+    {
+        return Err("invalid_frame");
+    }
+    {
+        let mut store = app.inner.state.lock().await;
+        consume_office_resume_attempt(
+            &mut store,
+            conn,
+            peer,
+            app.inner.config.pairing_ttl,
+            app.inner.config.max_global_resume_attempts,
+        )?;
+    }
+    let binding_id = string(&m, "binding_id")?;
+    if !valid_token(binding_id) {
+        return Err("binding_unavailable");
+    }
+    if app
+        .inner
+        .state
+        .lock()
+        .await
+        .denied_bindings
+        .contains(binding_id)
+    {
+        return Err("binding_unavailable");
+    }
+    let host = string(&m, "host")?;
+    let requested_capabilities = resume_capabilities(&m)?;
+    let binding = app
+        .inner
+        .bindings
+        .get_live(binding_id)
+        .map_err(|_| "binding_unavailable")?
+        .ok_or("binding_unavailable")?;
+    if binding.host != host
+        || binding.origin != OFFICE_ORIGIN
+        || binding.capabilities != requested_capabilities
+    {
+        return Err("binding_unavailable");
+    }
+    let mut challenge_bytes = [0_u8; 32];
+    rand::rng().fill(&mut challenge_bytes);
+    let challenge = URL_SAFE_NO_PAD.encode(challenge_bytes);
+    let mut store = app.inner.state.lock().await;
+    expire(&app.inner, &mut store);
+    if store.resume_challenges.contains_key(&conn) || store.office_resumes.contains_key(&conn) {
+        return Err("resume_limit");
+    }
+    if store.resume_challenges.len() + store.office_resumes.len() >= 10_000 {
+        return Err("resume_limit");
+    }
+    store.resume_challenges.insert(
+        conn,
+        ResumeChallenge {
+            binding,
+            challenge: challenge.clone(),
+            expires: Instant::now()
+                + app
+                    .inner
+                    .config
+                    .resume_challenge_ttl
+                    .min(RESUME_CHALLENGE_MAX),
+        },
+    );
+    store.expired_resume_challenges.remove(&conn);
+    send(
+        tx,
+        json!({"version":PROTOCOL_V2,"type":"office.challenge","binding_id":binding_id,"challenge":challenge,"expires_in":app.inner.config.resume_challenge_ttl.min(RESUME_CHALLENGE_MAX).as_secs()}),
+    );
+    Ok(())
+}
+
+async fn office_prove(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2
+        || !exact(
+            &m,
+            &["version", "type", "binding_id", "challenge", "signature"],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    let challenge_value = string(&m, "challenge")?;
+    let signature_value = string(&m, "signature")?;
+    let mut store = app.inner.state.lock().await;
+    let challenge = match store.resume_challenges.remove(&conn) {
+        Some(challenge) => challenge,
+        None => {
+            let matching_expired =
+                store
+                    .expired_resume_challenges
+                    .get(&conn)
+                    .is_some_and(|expired| {
+                        expired.binding_hash == sha256_bytes(binding_id.as_bytes())
+                            && expired.challenge_hash == sha256_bytes(challenge_value.as_bytes())
+                            && expired.expires > Instant::now()
+                    });
+            if matching_expired {
+                store.expired_resume_challenges.remove(&conn);
+                return Err("challenge_expired");
+            }
+            return Err("invalid_proof");
+        }
+    };
+    if challenge.expires <= Instant::now() {
+        return Err("challenge_expired");
+    }
+    if challenge.binding.id != binding_id || challenge.challenge != challenge_value {
+        return Err("invalid_proof");
+    }
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(signature_value)
+        .map_err(|_| "invalid_proof")?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|_| "invalid_proof")?;
+    let verifying_key = VerifyingKey::from_sec1_bytes(&challenge.binding.public_key)
+        .map_err(|_| "invalid_proof")?;
+    let transcript = resume_transcript(binding_id, challenge_value, &challenge.binding.host);
+    verifying_key
+        .verify(transcript.as_bytes(), &signature)
+        .map_err(|_| "invalid_proof")?;
+    store.office_resumes.insert(
+        conn,
+        OfficeResume {
+            binding: challenge.binding,
+            office: conn,
+            office_tx: tx.clone(),
+            expires: Instant::now() + app.inner.config.pairing_ttl,
+        },
+    );
+    if !complete_resume(app, &mut store, binding_id)? {
+        send(
+            tx,
+            json!({"version":PROTOCOL_V2,"type":"office.waiting_for_pc"}),
+        );
+    }
+    Ok(())
+}
+
+async fn pc_resume(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    subject: [u8; 32],
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if !app.inner.config.pairing_resume_enabled
+        || version(&m)? != PROTOCOL_V2
+        || !exact(&m, &["version", "type", "binding_id", "capabilities"])
+    {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    if !valid_token(binding_id) {
+        return Err("binding_unavailable");
+    }
+    if app
+        .inner
+        .state
+        .lock()
+        .await
+        .denied_bindings
+        .contains(binding_id)
+    {
+        return Err("binding_unavailable");
+    }
+    let offered_capabilities = resume_capabilities(&m)?;
+    let binding = app
+        .inner
+        .bindings
+        .get_live(binding_id)
+        .map_err(|_| "binding_unavailable")?
+        .ok_or("binding_unavailable")?;
+    if binding.subject != subject {
+        return Err("binding_unavailable");
+    }
+    if binding.capabilities != offered_capabilities {
+        return Err("capability_not_negotiated");
+    }
+    let mut store = app.inner.state.lock().await;
+    expire(&app.inner, &mut store);
+    let attempts = store.connection_resume_attempts.entry(conn).or_default();
+    *attempts = attempts.saturating_add(1);
+    if *attempts > 5 {
+        return Err("resume_rate_limited");
+    }
+    if store.pc_resumes.contains_key(&conn) {
+        return Err("resume_limit");
+    }
+    if store.pc_resumes.len() >= 10_000 {
+        return Err("resume_limit");
+    }
+    store.pc_resumes.insert(
+        conn,
+        PcResume {
+            binding_id: binding.id.clone(),
+            pc: conn,
+            pc_tx: tx.clone(),
+            subject,
+            capabilities: offered_capabilities,
+            expires: Instant::now() + app.inner.config.pairing_ttl,
+        },
+    );
+    if !complete_resume(app, &mut store, binding_id)? {
+        send(
+            tx,
+            json!({"version":PROTOCOL_V2,"type":"pc.waiting_for_office"}),
+        );
+    }
+    Ok(())
+}
+
+fn consume_office_resume_attempt(
+    store: &mut Store,
+    conn: u64,
+    peer: IpAddr,
+    window: Duration,
+    max_global_attempts: u32,
+) -> Result<(), &'static str> {
+    if store
+        .global_resume_attempts
+        .0
+        .is_none_or(|start| start.elapsed() > window)
+    {
+        store.global_resume_attempts = (Some(Instant::now()), 0);
+        store
+            .resume_attempts
+            .retain(|_, (started, _)| started.elapsed() <= window);
+    }
+    store.global_resume_attempts.1 = store.global_resume_attempts.1.saturating_add(1);
+    if store.global_resume_attempts.1 > max_global_attempts {
+        return Err("resume_rate_limited");
+    }
+    if store.resume_attempts.len() >= MAX_TRACKED_RESUME_IPS
+        && !store.resume_attempts.contains_key(&peer)
+    {
+        return Err("relay_busy");
+    }
+    let ip_attempts = store
+        .resume_attempts
+        .entry(peer)
+        .or_insert((Instant::now(), 0));
+    if ip_attempts.0.elapsed() > window {
+        *ip_attempts = (Instant::now(), 0);
+    }
+    ip_attempts.1 = ip_attempts.1.saturating_add(1);
+    if ip_attempts.1 > 20 {
+        return Err("resume_rate_limited");
+    }
+    let attempts = store.connection_resume_attempts.entry(conn).or_default();
+    *attempts = attempts.saturating_add(1);
+    if *attempts > 5 {
+        return Err("resume_rate_limited");
+    }
+    Ok(())
+}
+
+fn complete_resume(app: &App, store: &mut Store, binding_id: &str) -> Result<bool, &'static str> {
+    if store.denied_bindings.contains(binding_id) {
+        return Err("binding_unavailable");
+    }
+    let office_conn = store
+        .office_resumes
+        .iter()
+        .find(|(_, resume)| resume.binding.id == binding_id)
+        .map(|(conn, _)| *conn);
+    let pc_conn = store
+        .pc_resumes
+        .iter()
+        .find(|(_, resume)| resume.binding_id == binding_id)
+        .map(|(conn, _)| *conn);
+    let (Some(office_conn), Some(pc_conn)) = (office_conn, pc_conn) else {
+        return Ok(false);
+    };
+    if store.sessions.len() >= 10_000 {
+        return Err("relay_busy");
+    }
+    let pending_office = store
+        .office_resumes
+        .get(&office_conn)
+        .ok_or("peer_unavailable")?;
+    let pending_pc = store.pc_resumes.get(&pc_conn).ok_or("peer_unavailable")?;
+    let live_binding = app.inner.bindings.get_live(binding_id).ok().flatten();
+    let binding_is_live = live_binding.is_some_and(|binding| {
+        binding.subject == pending_pc.subject
+            && binding.host == pending_office.binding.host
+            && binding.origin == pending_office.binding.origin
+            && binding.capabilities == pending_pc.capabilities
+    }) && matches!(app.inner.bindings.touch(binding_id), Ok(true));
+    if !binding_is_live {
+        if let Some(office) = store.office_resumes.remove(&office_conn) {
+            versioned_error(&office.office_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+        if let Some(pc) = store.pc_resumes.remove(&pc_conn) {
+            versioned_error(&pc.pc_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+        return Ok(true);
+    }
+    let office = store
+        .office_resumes
+        .remove(&office_conn)
+        .ok_or("peer_unavailable")?;
+    let pc = store
+        .pc_resumes
+        .remove(&pc_conn)
+        .ok_or("peer_unavailable")?;
+    if office.binding.subject != pc.subject || office.binding.capabilities != pc.capabilities {
+        return Err("binding_unavailable");
+    }
+    let session_id = token();
+    let office_capability = token();
+    let pc_capability = token();
     let expires = app
         .inner
         .config
         .session_ttl
         .min(app.inner.config.session_max_ttl);
-    let now = Instant::now();
-    let pc_approved = if protocol == PROTOCOL_V2 {
-        json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
-    } else {
-        json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})
-    };
-    let office_approved = if protocol == PROTOCOL_V2 {
-        json!({"version":protocol,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
-    } else {
-        json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})
-    };
-    if tx.sender.capacity() == 0
-        || p.office_tx.sender.capacity() == 0
-        || try_send(tx, pc_approved).is_err()
-        || try_send(&p.office_tx, office_approved).is_err()
+    let office_frame = json!({"version":PROTOCOL_V2,"type":"office.approved","session_id":session_id,"capability":office_capability,"expires_in":expires.as_secs(),"capabilities":office.binding.capabilities});
+    let pc_frame = json!({"version":PROTOCOL_V2,"type":"pc.approved","session_id":session_id,"capability":pc_capability,"expires_in":expires.as_secs(),"capabilities":office.binding.capabilities});
+    if office.office_tx.sender.capacity() == 0
+        || pc.pc_tx.sender.capacity() == 0
+        || try_send(&office.office_tx, office_frame).is_err()
+        || try_send(&pc.pc_tx, pc_frame).is_err()
     {
-        tx.failed.notify_one();
-        p.office_tx.failed.notify_one();
+        office.office_tx.failed.notify_one();
+        pc.pc_tx.failed.notify_one();
         return Err("peer_unavailable");
     }
-    s.codes.remove(&p.code);
-    s.connection_sessions
-        .entry(p.office)
+    let now = Instant::now();
+    store
+        .connection_sessions
+        .entry(office.office)
         .or_default()
-        .insert(sid.clone());
-    s.connection_sessions
-        .entry(conn)
+        .insert(session_id.clone());
+    store
+        .connection_sessions
+        .entry(pc.pc)
         .or_default()
-        .insert(sid.clone());
-    s.sessions.insert(
-        sid,
+        .insert(session_id.clone());
+    store.sessions.insert(
+        session_id,
         Session {
-            version: protocol,
-            host: p.host,
-            office: p.office,
-            office_tx: p.office_tx,
-            pc: conn,
-            pc_tx: tx.clone(),
-            office_cap: oc,
-            pc_cap: pc,
+            version: PROTOCOL_V2,
+            host: office.binding.host,
+            office: office.office,
+            office_tx: office.office_tx,
+            pc: pc.pc,
+            pc_tx: pc.pc_tx,
+            office_cap: office_capability,
+            pc_cap: pc_capability,
             expires: now + expires,
             absolute_expires: now + app.inner.config.session_max_ttl,
             resume_until: None,
             pc_resume_until: None,
-            pc_subject: p.claimed_subject.ok_or("auth_required")?,
+            pc_subject: pc.subject,
             active: None,
             used_requests: VecDeque::new(),
-            capabilities: approved_capabilities,
+            capabilities: office.binding.capabilities,
             diagnostics: 0,
             diagnostic_window_started: now,
             diagnostic_window_count: 0,
+            binding_id: Some(binding_id.to_owned()),
         },
     );
+    Ok(true)
+}
+
+async fn revoke_binding(
+    app: &App,
+    _conn: u64,
+    tx: &Tx,
+    subject: [u8; 32],
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2 || !exact(&m, &["version", "type", "binding_id"]) {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    if !valid_token(binding_id)
+        || !app
+            .inner
+            .bindings
+            .revoke(binding_id, &subject)
+            .map_err(|_| "binding_unavailable")?
+    {
+        return Err("binding_unavailable");
+    }
+    let mut store = app.inner.state.lock().await;
+    store.denied_bindings.remove(binding_id);
+    store.pending_revocations.remove(binding_id);
+    store
+        .resume_challenges
+        .retain(|_, challenge| challenge.binding.id != binding_id);
+    let waiting_office: Vec<u64> = store
+        .office_resumes
+        .iter()
+        .filter(|(_, resume)| resume.binding.id == binding_id)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in waiting_office {
+        if let Some(resume) = store.office_resumes.remove(&conn) {
+            versioned_error(&resume.office_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+    }
+    let waiting_pc: Vec<u64> = store
+        .pc_resumes
+        .iter()
+        .filter(|(_, resume)| resume.binding_id == binding_id)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in waiting_pc {
+        if let Some(resume) = store.pc_resumes.remove(&conn) {
+            versioned_error(&resume.pc_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+    }
+    send(
+        tx,
+        json!({"version":PROTOCOL_V2,"type":"pc.binding_revoked","binding_id":binding_id}),
+    );
+    let sessions: Vec<String> = store
+        .sessions
+        .iter()
+        .filter(|(_, session)| session.binding_id.as_deref() == Some(binding_id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for session_id in sessions {
+        if let Some(session) = store.sessions.remove(&session_id) {
+            if let Some(ids) = store.connection_sessions.get_mut(&session.office) {
+                ids.remove(&session_id);
+            }
+            if let Some(ids) = store.connection_sessions.get_mut(&session.pc) {
+                ids.remove(&session_id);
+            }
+            if let Some(active) = session.active.as_ref() {
+                send(
+                    &session.pc_tx,
+                    json!({"version":PROTOCOL_V2,"type":"relay.cancel","session_id":session_id,"request_id":active.id}),
+                );
+            }
+            versioned_error(&session.office_tx, PROTOCOL_V2, "session_revoked");
+            versioned_error(&session.pc_tx, PROTOCOL_V2, "session_revoked");
+        }
+    }
     Ok(())
 }
 
@@ -1136,7 +2706,7 @@ async fn resume_office(
         return Err("unsupported_host");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let session = store.sessions.get_mut(&sid).ok_or("invalid_session")?;
     if session.version != PROTOCOL_V2 || session.office_cap != cap || session.host != host {
         return Err("invalid_capability");
@@ -1178,7 +2748,7 @@ async fn resume_pc(
     let sid = string(&m, "session_id")?.to_owned();
     let cap = string(&m, "capability")?;
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let session = store.sessions.get_mut(&sid).ok_or("invalid_session")?;
     if session.version != PROTOCOL_V2 || session.pc_cap != cap || session.pc_subject != subject {
         return Err("invalid_capability");
@@ -1247,6 +2817,18 @@ async fn leave_office(
         );
     }
     Ok(())
+}
+
+fn valid_token(value: &str) -> bool {
+    value.len() == 43 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn resume_transcript(binding_id: &str, challenge: &str, host: &str) -> String {
+    format!("wiswork-office-resume-v1\n{binding_id}\n{challenge}\n{OFFICE_ORIGIN}\n{host}")
+}
+
+fn sha256_bytes(value: &[u8]) -> [u8; 32] {
+    Sha256::digest(value).into()
 }
 
 const DIAGNOSTIC_REQUIRED_KEYS: &[&str] = &[
@@ -1426,7 +3008,7 @@ async fn diagnostic(
     }
 
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != PROTOCOL_V2 {
         return Err("invalid_capability");
@@ -1499,6 +3081,22 @@ async fn reject(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     }
     let p = s.pairings.remove(id).unwrap();
     s.codes.remove(&p.code);
+    if let Some(approved) = p.pending_binding.as_ref() {
+        if approved.phase == PendingBindingPhase::CommitSent {
+            compensate_binding(&app.inner, &mut s, &p, Some(&approved.id));
+        }
+        remember_completed_offer(
+            &app.inner,
+            &mut s,
+            p.id.clone(),
+            p.office,
+            approved.id.clone(),
+        );
+        send(
+            &p.office_tx,
+            json!({"version":PROTOCOL_V2,"type":"office.binding_aborted","pairing_id":p.id,"binding_id":approved.id}),
+        );
+    }
     send(
         &p.office_tx,
         json!({"version":protocol,"type":"office.rejected"}),
@@ -1512,6 +3110,12 @@ fn session_fields(m: &Map<String, Value>) -> Result<(&str, &str, &str), &'static
         string(m, "capability")?,
         string(m, "request_id")?,
     ))
+}
+fn valid_identifier(value: &str) -> bool {
+    (8..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 async fn request(
     app: &App,
@@ -1583,7 +3187,7 @@ async fn request(
     let identity = if team {
         let pc_subject = {
             let mut store = app.inner.state.lock().await;
-            expire(&mut store, app.inner.config.pairing_ttl);
+            expire(&app.inner, &mut store);
             let session = store.sessions.get(sid).ok_or("invalid_session")?;
             if session.office != conn
                 || session.office_cap != cap
@@ -1623,7 +3227,7 @@ async fn request(
         None
     };
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1633,7 +3237,8 @@ async fn request(
     }
     let capability_name = if protocol == PROTOCOL_V2 {
         let name = string(&m, "capability_name")?;
-        if !session.capabilities.iter().any(|item| item == name) {
+        // Lease renewal is authenticated session control, never a callable service.
+        if name == "enhanced-lease.v1" || !session.capabilities.iter().any(|item| item == name) {
             send(
                 &session.office_tx,
                 json!({"version":protocol,"type":"relay.error","session_id":sid,"request_id":rid,"code":"capability_not_negotiated"}),
@@ -1684,12 +3289,22 @@ async fn request(
         session.used_requests.pop_front();
     }
     session.used_requests.push_back(rid.to_owned());
+    // v2 agent requests multiplex many model/tool steps, unlike retrieval and
+    // legacy single-response requests. Keep an absolute watchdog behind the
+    // Taskpane's progress timeout (280s) and whole-turn cap (30 minutes).
+    let request_ttl = if capability_name.as_deref() == Some("agent.v1") {
+        app.inner.config.agent_request_ttl
+    } else {
+        app.inner.config.request_ttl
+    };
     session.active = Some(Active {
         id: rid.into(),
         sequence: 0,
         bytes: 0,
-        deadline: Instant::now() + app.inner.config.request_ttl,
+        deadline: Instant::now() + request_ttl,
         started: false,
+        pending_tool: None,
+        used_tool_calls: VecDeque::new(),
     });
     let mut forward = if let Some(name) = capability_name {
         json!({"version":protocol,"type":"relay.request","session_id":sid,"request_id":rid,"capability_name":name,"body":m["body"]})
@@ -1710,7 +3325,7 @@ async fn request(
     let deadline_app = app.clone();
     let deadline_sid = sid.to_owned();
     let deadline_rid = rid.to_owned();
-    let deadline = app.inner.config.request_ttl;
+    let deadline = request_ttl;
     tokio::spawn(async move {
         tokio::time::sleep(deadline).await;
         let mut store = deadline_app.inner.state.lock().await;
@@ -1755,7 +3370,7 @@ async fn cancel_authenticating_team(
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn
         || session.office_cap != cap
@@ -1789,7 +3404,7 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1805,6 +3420,142 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     send(
         &session.pc_tx,
         json!({"version":protocol,"type":"relay.cancel","session_id":sid,"request_id":rid}),
+    );
+    Ok(())
+}
+
+async fn tool_call(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
+    if protocol != PROTOCOL_V2
+        || !exact(
+            &m,
+            &[
+                "version",
+                "type",
+                "session_id",
+                "capability",
+                "request_id",
+                "turn_id",
+                "call_id",
+                "generation",
+                "tool_name",
+                "input",
+            ],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let (sid, cap, rid) = session_fields(&m)?;
+    let turn_id = string(&m, "turn_id")?;
+    let call_id = string(&m, "call_id")?;
+    let tool_name = string(&m, "tool_name")?;
+    let generation = m["generation"].as_u64().ok_or("invalid_frame")?;
+    if !valid_identifier(turn_id)
+        || !valid_identifier(call_id)
+        || tool_name.is_empty()
+        || tool_name.len() > 128
+        || !tool_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return Err("invalid_frame");
+    }
+    if !m["input"].is_object()
+        || serde_json::to_vec(&m["input"])
+            .map_err(|_| "invalid_frame")?
+            .len()
+            > REQUEST_MAX
+    {
+        return Err("request_too_large");
+    }
+    let mut st = app.inner.state.lock().await;
+    expire(&app.inner, &mut st);
+    let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    let active = session.active.as_mut().ok_or("invalid_request")?;
+    if active.id != rid || !active.started || active.deadline <= Instant::now() {
+        return Err("invalid_request");
+    }
+    if active.pending_tool.is_some() {
+        return Err("tool_active");
+    }
+    if active.used_tool_calls.iter().any(|used| used == call_id) {
+        return Err("duplicate_tool_call");
+    }
+    if active.used_tool_calls.len() == 64 {
+        active.used_tool_calls.pop_front();
+    }
+    active.used_tool_calls.push_back(call_id.to_owned());
+    active.pending_tool = Some(PendingTool {
+        turn_id: turn_id.to_owned(),
+        call_id: call_id.to_owned(),
+        generation,
+    });
+    renew_session(session, app.inner.config.session_ttl);
+    send(
+        &session.office_tx,
+        json!({"version":protocol,"type":"relay.tool_call","session_id":sid,"request_id":rid,"turn_id":turn_id,"call_id":call_id,"generation":generation,"tool_name":tool_name,"input":m["input"]}),
+    );
+    Ok(())
+}
+
+async fn tool_result(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
+    if protocol != PROTOCOL_V2
+        || !exact(
+            &m,
+            &[
+                "version",
+                "type",
+                "session_id",
+                "capability",
+                "request_id",
+                "turn_id",
+                "call_id",
+                "generation",
+                "output",
+                "is_error",
+            ],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let (sid, cap, rid) = session_fields(&m)?;
+    let turn_id = string(&m, "turn_id")?;
+    let call_id = string(&m, "call_id")?;
+    let generation = m["generation"].as_u64().ok_or("invalid_frame")?;
+    let output = string(&m, "output")?;
+    let is_error = m["is_error"].as_bool().ok_or("invalid_frame")?;
+    if output.len() > RESPONSE_MAX {
+        return Err("response_too_large");
+    }
+    let mut st = app.inner.state.lock().await;
+    expire(&app.inner, &mut st);
+    let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.office != conn || session.office_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    // A cancelled/timed-out request may have a tool result already in transit.
+    // Validate the session authority first, then ignore this retired request.
+    if known_inactive_request(session, rid) {
+        return Ok(());
+    }
+    let active = session.active.as_mut().ok_or("invalid_request")?;
+    if active.id != rid {
+        return Err("invalid_request");
+    }
+    let pending = active.pending_tool.as_ref().ok_or("invalid_tool_call")?;
+    if pending.turn_id != turn_id || pending.call_id != call_id || pending.generation != generation
+    {
+        return Err("invalid_tool_call");
+    }
+    active.pending_tool = None;
+    renew_session(session, app.inner.config.session_ttl);
+    send(
+        &session.pc_tx,
+        json!({"version":protocol,"type":"relay.tool_result","session_id":sid,"request_id":rid,"turn_id":turn_id,"call_id":call_id,"generation":generation,"output":output,"is_error":is_error}),
     );
     Ok(())
 }
@@ -1833,7 +3584,7 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
         return Err("chunk_too_large");
     }
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1894,7 +3645,7 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
         return Err("invalid_content_type");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1915,6 +3666,90 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     );
     Ok(())
 }
+
+fn valid_enhanced_statement(value: &Value, host: &str) -> bool {
+    let Some(record) = value.as_object() else {
+        return false;
+    };
+    let expected_host = match host {
+        "Word" => "office-word",
+        "Excel" => "office-excel",
+        "PowerPoint" => "office-powerpoint",
+        _ => return false,
+    };
+    exact(
+        record,
+        &[
+            "version",
+            "runtime_mode",
+            "runtime_instance",
+            "component_version",
+            "host",
+            "raw_office",
+            "expires_at",
+            "policy_generation",
+            "session_generation",
+        ],
+    ) && record["version"] == 1
+        && record["runtime_mode"] == "enhanced"
+        && record["runtime_instance"]
+            .as_str()
+            .is_some_and(valid_identifier)
+        && record["component_version"]
+            .as_str()
+            .is_some_and(|v| v == "0.147.0")
+        && record["host"] == expected_host
+        && record["raw_office"].is_boolean()
+        && record["expires_at"].as_u64().is_some_and(|v| v > 0)
+        && record["policy_generation"].as_u64().is_some()
+        && record["session_generation"].as_u64().is_some()
+}
+
+async fn session_state(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
+    if protocol != PROTOCOL_V2
+        || !exact(
+            &m,
+            &[
+                "version",
+                "type",
+                "session_id",
+                "capability",
+                "generation",
+                "enhanced",
+            ],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let sid = string(&m, "session_id")?;
+    let cap = string(&m, "capability")?;
+    let generation = m["generation"].as_u64().ok_or("invalid_frame")?;
+    if !m["enhanced"].is_null()
+        && serde_json::to_vec(&m["enhanced"])
+            .map_err(|_| "invalid_frame")?
+            .len()
+            > 4096
+    {
+        return Err("frame_too_large");
+    }
+    let mut store = app.inner.state.lock().await;
+    expire(&app.inner, &mut store);
+    let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    if !m["enhanced"].is_null() && !valid_enhanced_statement(&m["enhanced"], &session.host) {
+        return Err("invalid_frame");
+    }
+    // Background authority renewal is not user activity. Keep both the idle
+    // and absolute session deadlines independent of session-state traffic.
+    send(
+        &session.office_tx,
+        json!({"version":protocol,"type":"relay.session_state","session_id":sid,"generation":generation,"enhanced":m["enhanced"]}),
+    );
+    Ok(())
+}
 async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
     let protocol = version(&m)?;
     if !exact(
@@ -1925,7 +3760,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1938,6 +3773,13 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     }
     if !session.active.as_ref().is_some_and(|active| active.started) {
         return Err("invalid_request");
+    }
+    if session
+        .active
+        .as_ref()
+        .is_some_and(|active| active.pending_tool.is_some())
+    {
+        return Err("tool_active");
     }
     renew_session(session, app.inner.config.session_ttl);
     session.active = None;
@@ -1971,7 +3813,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
         return Err("invalid_frame");
     }
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1991,8 +3833,65 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     Ok(())
 }
 
-fn expire(s: &mut Store, ttl: Duration) {
+fn expire(inner: &Inner, s: &mut Store) {
     let now = Instant::now();
+    let pending_revocations: Vec<_> = s
+        .pending_revocations
+        .iter()
+        .map(|(binding_id, subject)| (binding_id.clone(), *subject))
+        .collect();
+    for (binding_id, subject) in pending_revocations {
+        let converged = matches!(inner.bindings.revoke(&binding_id, &subject), Ok(true))
+            || matches!(inner.bindings.get_live(&binding_id), Ok(None));
+        if converged {
+            s.pending_revocations.remove(&binding_id);
+            s.denied_bindings.remove(&binding_id);
+        }
+    }
+    let expired_challenges: Vec<_> = s
+        .resume_challenges
+        .iter()
+        .filter(|(_, challenge)| challenge.expires <= now)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in expired_challenges {
+        if let Some(challenge) = s.resume_challenges.remove(&conn) {
+            s.expired_resume_challenges.insert(
+                conn,
+                ExpiredResumeChallenge {
+                    binding_hash: sha256_bytes(challenge.binding.id.as_bytes()),
+                    challenge_hash: sha256_bytes(challenge.challenge.as_bytes()),
+                    expires: now + inner.config.pairing_ttl,
+                },
+            );
+        }
+    }
+    s.expired_resume_challenges
+        .retain(|_, challenge| challenge.expires > now);
+    s.completed_binding_offers
+        .retain(|_, completed| completed.expires > now);
+    let expired_office_resumes: Vec<_> = s
+        .office_resumes
+        .iter()
+        .filter(|(_, resume)| resume.expires <= now)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in expired_office_resumes {
+        if let Some(resume) = s.office_resumes.remove(&conn) {
+            versioned_error(&resume.office_tx, PROTOCOL_V2, "peer_unavailable");
+        }
+    }
+    let expired_pc_resumes: Vec<_> = s
+        .pc_resumes
+        .iter()
+        .filter(|(_, resume)| resume.expires <= now)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in expired_pc_resumes {
+        if let Some(resume) = s.pc_resumes.remove(&conn) {
+            versioned_error(&resume.pc_tx, PROTOCOL_V2, "peer_unavailable");
+        }
+    }
     let dead: Vec<_> = s
         .pairings
         .iter()
@@ -2001,11 +3900,19 @@ fn expire(s: &mut Store, ttl: Duration) {
         .collect();
     for id in dead {
         if let Some(p) = s.pairings.remove(&id) {
-            s.codes.remove(&p.code);
-            send(
-                &p.office_tx,
-                json!({"version":p.version,"type":"office.expired"}),
-            );
+            if let Some(binding_id) = p.pending_binding.as_ref().map(|pending| pending.id.clone()) {
+                let committed = p
+                    .pending_binding
+                    .as_ref()
+                    .is_some_and(|pending| pending.phase == PendingBindingPhase::CommitSent);
+                let _ = fallback_staged_pairing(inner, s, p, binding_id, committed);
+            } else {
+                s.codes.remove(&p.code);
+                send(
+                    &p.office_tx,
+                    json!({"version":p.version,"type":"office.expired"}),
+                );
+            }
         }
     }
     let expired_sessions: Vec<_> = s
@@ -2033,16 +3940,25 @@ fn expire(s: &mut Store, ttl: Duration) {
         }
     }
     s.claim_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
     s.create_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
     s.preauth_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
+    s.resume_attempts
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
 }
 async fn cleanup(app: &App, conn: u64, explicitly_revoked: bool) {
     let mut s = app.inner.state.lock().await;
     s.connection_pairings.remove(&conn);
     s.connection_sessions.remove(&conn);
+    s.connection_resume_attempts.remove(&conn);
+    s.resume_challenges.remove(&conn);
+    s.expired_resume_challenges.remove(&conn);
+    s.completed_binding_offers
+        .retain(|_, completed| completed.office != conn);
+    s.office_resumes.remove(&conn);
+    s.pc_resumes.remove(&conn);
     let pids: Vec<_> = s
         .pairings
         .iter()
@@ -2052,6 +3968,52 @@ async fn cleanup(app: &App, conn: u64, explicitly_revoked: bool) {
     for id in pids {
         if let Some(p) = s.pairings.remove(&id) {
             s.codes.remove(&p.code);
+            if let Some(approved) = p
+                .pending_binding
+                .as_ref()
+                .filter(|approved| approved.phase == PendingBindingPhase::CommitSent)
+            {
+                compensate_binding(&app.inner, &mut s, &p, Some(&approved.id));
+            }
+            if let Some((_, pc_tx)) = p.pc {
+                versioned_error(&pc_tx, p.version, "peer_unavailable");
+            }
+        }
+    }
+    let staged_pc_pairings: Vec<_> = s
+        .pairings
+        .iter()
+        .filter(|(_, pairing)| {
+            pairing
+                .pending_binding
+                .as_ref()
+                .is_some_and(|approved| approved.pc == conn)
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in staged_pc_pairings {
+        if let Some(pairing) = s.pairings.remove(&id) {
+            s.codes.remove(&pairing.code);
+            if let Some(approved) = pairing.pending_binding.as_ref() {
+                if approved.phase == PendingBindingPhase::CommitSent {
+                    compensate_binding(&app.inner, &mut s, &pairing, Some(&approved.id));
+                }
+                remember_completed_offer(
+                    &app.inner,
+                    &mut s,
+                    pairing.id.clone(),
+                    pairing.office,
+                    approved.id.clone(),
+                );
+                send(
+                    &pairing.office_tx,
+                    json!({"version":PROTOCOL_V2,"type":"office.binding_aborted","pairing_id":pairing.id,"binding_id":approved.id}),
+                );
+                send(
+                    &pairing.office_tx,
+                    json!({"version":PROTOCOL_V2,"type":"office.pc_offline"}),
+                );
+            }
         }
     }
     for pairing in s.pairings.values_mut() {
@@ -2142,7 +4104,662 @@ async fn cleanup(app: &App, conn: u64, explicitly_revoked: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn negotiates_full_ppt_and_enhanced_capabilities_with_a_bounded_count() {
+        let body = serde_json::json!({"capabilities": super::SUPPORTED_CAPABILITIES});
+        assert_eq!(
+            super::capabilities(body.as_object().unwrap())
+                .unwrap()
+                .len(),
+            super::SUPPORTED_CAPABILITIES.len()
+        );
+        let mut oversized: Vec<_> = super::SUPPORTED_CAPABILITIES
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        oversized.push("future.v1".to_owned());
+        let body = serde_json::json!({"capabilities": oversized});
+        assert_eq!(
+            super::capabilities(body.as_object().unwrap()),
+            Err("invalid_frame")
+        );
+    }
+
+    #[test]
+    fn negotiates_and_resumes_enhanced_lease_capability() {
+        let body = serde_json::json!({"capabilities":["agent.v1","enhanced-lease.v1"]});
+        let map = body.as_object().unwrap();
+        assert_eq!(
+            super::capabilities(map).unwrap(),
+            vec!["agent.v1", "enhanced-lease.v1"]
+        );
+        assert_eq!(
+            super::resume_capabilities(map).unwrap(),
+            vec!["agent.v1", "enhanced-lease.v1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn enhanced_lease_control_never_renews_idle_or_absolute_expiry() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(8);
+        let (pc_sender, _pc_receiver) = mpsc::channel(8);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let now = Instant::now();
+        let expires = now + Duration::from_secs(60);
+        let absolute_expires = now + Duration::from_secs(120);
+        app.inner.state.lock().await.sessions.insert(
+            "lease_session".into(),
+            Session {
+                version: PROTOCOL_V2,
+                host: "Word".into(),
+                office: 1,
+                office_tx,
+                pc: 2,
+                pc_tx,
+                office_cap: "office_cap".into(),
+                pc_cap: "pc_cap".into(),
+                expires,
+                absolute_expires,
+                resume_until: None,
+                pc_resume_until: None,
+                pc_subject: [0; 32],
+                active: None,
+                used_requests: VecDeque::new(),
+                capabilities: vec!["agent.v1".into(), "enhanced-lease.v1".into()],
+                diagnostics: 0,
+                diagnostic_window_started: now,
+                diagnostic_window_count: 0,
+                binding_id: None,
+            },
+        );
+        let frame = json!({"version":2,"type":"pc.session_state","session_id":"lease_session","capability":"pc_cap","generation":7,
+            "enhanced":{"version":1,"runtime_mode":"enhanced","runtime_instance":"runtime_0123456789abcdef","component_version":"0.147.0","host":"office-word","raw_office":false,"expires_at":900_000,"policy_generation":2,"session_generation":7}});
+        assert_eq!(
+            session_state(&app, 9, frame.as_object().unwrap().clone()).await,
+            Err("invalid_capability")
+        );
+        for expiry in [900_000, 1_500_000] {
+            let mut update = frame.clone();
+            update["enhanced"]["expires_at"] = json!(expiry);
+            assert_eq!(
+                session_state(&app, 2, update.as_object().unwrap().clone()).await,
+                Ok(())
+            );
+            assert!(office_receiver.recv().await.is_some());
+            let store = app.inner.state.lock().await;
+            let session = store.sessions.get("lease_session").unwrap();
+            assert_eq!(
+                session.expires, expires,
+                "lease control cannot act as user activity"
+            );
+            assert_eq!(session.absolute_expires, absolute_expires);
+            assert!(session.active.is_none());
+        }
+    }
+
+    #[test]
+    fn negotiates_and_resumes_design_document_capability() {
+        let body = serde_json::json!({"capabilities":["agent.v1","design-document.v1"]});
+        let map = body.as_object().unwrap();
+        assert_eq!(
+            super::capabilities(map).unwrap(),
+            vec!["agent.v1", "design-document.v1"]
+        );
+        assert_eq!(
+            super::resume_capabilities(map).unwrap(),
+            vec!["agent.v1", "design-document.v1"]
+        );
+    }
     use super::*;
+    use std::{future::pending, sync::Mutex as StdMutex};
+
+    type MockRequests = Arc<StdMutex<Vec<(String, Vec<SocketAddr>)>>>;
+
+    #[derive(Clone, Default)]
+    struct MockImageNetwork {
+        resolutions: Arc<StdMutex<HashMap<String, Vec<SocketAddr>>>>,
+        responses: Arc<StdMutex<VecDeque<ImageResponse>>>,
+        requests: MockRequests,
+        hang: bool,
+        requested: Arc<Notify>,
+    }
+
+    impl MockImageNetwork {
+        fn resolving(self, host: &str, addresses: &[&str]) -> Self {
+            self.resolutions.lock().unwrap().insert(
+                host.to_owned(),
+                addresses
+                    .iter()
+                    .map(|address| address.parse().unwrap())
+                    .collect(),
+            );
+            self
+        }
+
+        fn responding(self, response: ImageResponse) -> Self {
+            self.responses.lock().unwrap().push_back(response);
+            self
+        }
+
+        fn hanging(mut self) -> Self {
+            self.hang = true;
+            self
+        }
+    }
+
+    impl ImageNetwork for MockImageNetwork {
+        fn resolve(
+            &self,
+            host: String,
+        ) -> BoxFuture<'static, Result<Vec<SocketAddr>, ImageFetchError>> {
+            let result = self.resolutions.lock().unwrap().get(&host).cloned();
+            Box::pin(async move { result.ok_or(ImageFetchError::Unavailable) })
+        }
+
+        fn request(
+            &self,
+            url: reqwest::Url,
+            _host: String,
+            addresses: Vec<SocketAddr>,
+        ) -> BoxFuture<'static, Result<ImageResponse, ImageFetchError>> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((url.to_string(), addresses));
+            self.requested.notify_one();
+            if self.hang {
+                return Box::pin(pending());
+            }
+            let response = self.responses.lock().unwrap().pop_front();
+            Box::pin(async move { response.ok_or(ImageFetchError::Unavailable) })
+        }
+    }
+
+    fn mock_response(
+        status: StatusCode,
+        location: Option<&str>,
+        mime: Option<&str>,
+        declared_size: Option<u64>,
+        chunks: Vec<Result<Vec<u8>, ImageFetchError>>,
+    ) -> ImageResponse {
+        ImageResponse {
+            status,
+            location: location.map(str::to_owned),
+            mime: mime.map(str::to_owned),
+            declared_size,
+            chunks: Box::pin(futures_util::stream::iter(chunks)),
+        }
+    }
+
+    #[test]
+    fn image_fetch_rejects_unsafe_urls_and_non_public_addresses() {
+        for url in [
+            "http://example.com/a.png",
+            "https://user@example.com/a.png",
+            "https://example.com:444/a.png",
+            "https://example.com/a.png#fragment",
+        ] {
+            assert_eq!(validate_image_url(url), Err(ImageFetchError::Unavailable));
+        }
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.1.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "203.0.113.1",
+            "::1",
+            "::ffff:8.8.8.8",
+            "2001:db8::1",
+            "2001:20::1",
+            "2002:7f00:1::1",
+            "2002:a00:1::1",
+            "2002:a9fe:101::1",
+            "64:ff9b::7f00:1",
+        ] {
+            assert!(
+                !is_public_ip(address.parse().unwrap()),
+                "accepted {address}"
+            );
+        }
+        assert!(is_public_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn image_fetch_global_rate_limit_is_bounded() {
+        let app = test_app();
+        for _ in 0..IMAGE_RATE_MAX {
+            assert!(allow_image_fetch(&app).await);
+        }
+        assert!(!allow_image_fetch(&app).await);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+        assert_eq!(IMAGE_TIMEOUT, Duration::from_secs(15));
+        assert_eq!(IMAGE_RESPONSE_MAX, 10 * 1024 * 1024);
+        assert_eq!(IMAGE_REDIRECT_MAX, 3);
+    }
+
+    #[test]
+    fn image_fetch_validates_every_dns_answer_mime_and_both_size_limits() {
+        let public: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        let private: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        assert_eq!(
+            validate_resolved_addresses(&[]),
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(
+            validate_resolved_addresses(&[public, private]),
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(validate_resolved_addresses(&[public]), Ok(()));
+
+        assert_eq!(accepted_image_mime("image/png"), Ok("image/png"));
+        assert_eq!(
+            accepted_image_mime("image/jpeg; charset=binary"),
+            Ok("image/jpeg")
+        );
+        assert_eq!(accepted_image_mime("IMAGE/PNG"), Ok("image/png"));
+        assert_eq!(accepted_image_mime("Image/Jpeg"), Ok("image/jpeg"));
+        assert_eq!(
+            accepted_image_mime("image/svg+xml"),
+            Err(ImageFetchError::Mime)
+        );
+        assert_eq!(
+            validate_declared_image_size(Some(IMAGE_RESPONSE_MAX as u64 + 1)),
+            Err(ImageFetchError::Limit)
+        );
+
+        let mut body = vec![0; IMAGE_RESPONSE_MAX];
+        assert_eq!(
+            append_image_chunk(&mut body, &[1]),
+            Err(ImageFetchError::Limit)
+        );
+    }
+
+    #[tokio::test]
+    async fn downloader_pins_validated_addresses_and_returns_png_and_jpeg() {
+        for (mime, expected_mime, bytes) in [
+            ("IMAGE/PNG", "image/png", vec![137, 80, 78, 71]),
+            ("image/jpeg", "image/jpeg", vec![255, 216, 255]),
+        ] {
+            let network = MockImageNetwork::default()
+                .resolving("images.example", &["8.8.8.8:443", "1.1.1.1:443"])
+                .responding(mock_response(
+                    StatusCode::OK,
+                    None,
+                    Some(mime),
+                    Some(bytes.len() as u64),
+                    vec![Ok(bytes.clone())],
+                ));
+            assert_eq!(
+                fetch_image_with_network("https://images.example/a", &network).await,
+                Ok((expected_mime, bytes))
+            );
+            assert_eq!(
+                network.requests.lock().unwrap().as_slice(),
+                &[(
+                    ("https://images.example/a").to_owned(),
+                    vec![
+                        "8.8.8.8:443".parse().unwrap(),
+                        "1.1.1.1:443".parse().unwrap(),
+                    ]
+                )]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_uses_pinned_addresses_and_disables_auto_redirects() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let final_hits = Arc::new(AtomicU64::new(0));
+        let hits = final_hits.clone();
+        let router = Router::new()
+            .route(
+                "/start",
+                get(|| async { axum::response::Redirect::temporary("/final") }),
+            )
+            .route(
+                "/final",
+                get(move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::Relaxed);
+                        "unexpected"
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let response = ReqwestImageNetwork
+            .request(
+                reqwest::Url::parse(&format!("http://pinned.invalid:{}/start", address.port()))
+                    .unwrap(),
+                "pinned.invalid".to_owned(),
+                vec![address],
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(final_hits.load(Ordering::Relaxed), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn downloader_revalidates_redirect_dns_before_requesting_target() {
+        let network = MockImageNetwork::default()
+            .resolving("first.example", &["8.8.8.8:443"])
+            .resolving("rebound.example", &["1.1.1.1:443", "127.0.0.1:443"])
+            .responding(mock_response(
+                StatusCode::FOUND,
+                Some("https://rebound.example/private"),
+                None,
+                None,
+                vec![],
+            ));
+        assert_eq!(
+            fetch_image_with_network("https://first.example/start", &network).await,
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(network.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn downloader_stops_after_three_manual_redirects() {
+        let mut network = MockImageNetwork::default().resolving("images.example", &["8.8.8.8:443"]);
+        for target in ["/one", "/two", "/three", "/four"] {
+            network = network.responding(mock_response(
+                StatusCode::FOUND,
+                Some(target),
+                None,
+                None,
+                vec![],
+            ));
+        }
+        assert_eq!(
+            fetch_image_with_network("https://images.example/start", &network).await,
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(network.requests.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn downloader_enforces_mime_declared_and_streaming_limits() {
+        let response_cases = [
+            mock_response(StatusCode::NO_CONTENT, None, None, None, vec![]),
+            mock_response(
+                StatusCode::PARTIAL_CONTENT,
+                None,
+                Some("image/jpeg"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ),
+            mock_response(
+                StatusCode::OK,
+                None,
+                Some("text/plain"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ),
+            mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/png"),
+                Some(IMAGE_RESPONSE_MAX as u64 + 1),
+                vec![],
+            ),
+            mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/jpeg"),
+                None,
+                vec![Ok(vec![0; IMAGE_RESPONSE_MAX]), Ok(vec![1])],
+            ),
+        ];
+        for (response, expected) in response_cases.into_iter().zip([
+            ImageFetchError::Unavailable,
+            ImageFetchError::Unavailable,
+            ImageFetchError::Mime,
+            ImageFetchError::Limit,
+            ImageFetchError::Limit,
+        ]) {
+            let network = MockImageNetwork::default()
+                .resolving("images.example", &["8.8.8.8:443"])
+                .responding(response);
+            assert_eq!(
+                fetch_image_with_network("https://images.example/a", &network).await,
+                Err(expected)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn downloader_whole_operation_timeout_and_global_concurrency_are_enforced() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let auth = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let config = Config {
+            auth_url: format!("http://127.0.0.1:{}/oidc/me", address.port()),
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer opaque-token".parse().unwrap(),
+        );
+        let timed = image_fetch_with_timeout(
+            app.clone(),
+            headers,
+            ImageFetchRequest {
+                url: "https://images.example/a".to_owned(),
+            },
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(timed.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(app.inner.auth_slots.available_permits(), 1);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+        auth.abort();
+
+        let app = test_app();
+        let network = MockImageNetwork::default()
+            .resolving("images.example", &["8.8.8.8:443"])
+            .hanging();
+        let timed = tokio::time::timeout(
+            Duration::from_millis(100),
+            guarded_fetch_image_with(
+                &app,
+                "https://images.example/a",
+                &network,
+                Duration::from_millis(1),
+            ),
+        )
+        .await
+        .expect("downloader's whole-operation timeout was not enforced");
+        assert!(matches!(timed, Err(ImageFetchError::Unavailable)));
+
+        let app = test_app();
+        let network = Arc::new(
+            MockImageNetwork::default()
+                .resolving("images.example", &["8.8.8.8:443"])
+                .hanging(),
+        );
+        let first_app = app.clone();
+        let first_network = network.clone();
+        let first = tokio::spawn(async move {
+            guarded_fetch_image_with(
+                &first_app,
+                "https://images.example/a",
+                first_network.as_ref(),
+                Duration::from_secs(60),
+            )
+            .await
+        });
+        network.requested.notified().await;
+        assert!(matches!(
+            guarded_fetch_image_with(
+                &app,
+                "https://images.example/b",
+                network.as_ref(),
+                Duration::from_millis(1),
+            )
+            .await,
+            Err(ImageFetchError::Busy)
+        ));
+        first.abort();
+
+        let app = test_app();
+        let network = MockImageNetwork::default()
+            .resolving("images.example", &["8.8.8.8:443"])
+            .responding(mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/png"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ));
+        let (mime, body, permit) = guarded_fetch_image_with(
+            &app,
+            "https://images.example/a",
+            &network,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let response = image_success_response(mime, body, permit);
+        assert_eq!(app.inner.image_slots.available_permits(), 0);
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Bytes::from_static(&[1])
+        );
+        assert_eq!(app.inner.image_slots.available_permits(), 0);
+        drop(stream);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+
+        let permit = app.inner.image_slots.clone().try_acquire_owned().unwrap();
+        let response = image_success_response("image/png", vec![1], permit);
+        let mut stream = response.into_body().into_data_stream();
+        while stream.next().await.is_some() {}
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+    }
+
+    fn test_app() -> App {
+        test_app_with_config(Config::default())
+    }
+
+    fn test_app_with_config(config: Config) -> App {
+        test_app_with_bindings(config, BindingStore::open(None).unwrap())
+    }
+
+    fn test_app_with_bindings(config: Config, bindings: BindingStore) -> App {
+        App {
+            inner: Arc::new(Inner {
+                state: Mutex::new(Store::default()),
+                next: AtomicU64::new(1),
+                config,
+                http: reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("test HTTP client"),
+                auth_slots: Arc::new(Semaphore::new(1)),
+                image_slots: Arc::new(Semaphore::new(1)),
+                image_attempts: Mutex::new(VecDeque::new()),
+                bindings,
+                fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
+            }),
+        }
+    }
+
+    async fn insert_test_pairing(app: &App, office_tx: Tx, pc_tx: Tx, subject: [u8; 32]) {
+        let signing_key = p256::ecdsa::SigningKey::from_slice(&[21_u8; 32]).unwrap();
+        let public_key: [u8; 65] = signing_key
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .try_into()
+            .unwrap();
+        let pairing_id = "A".repeat(43);
+        let mut store = app.inner.state.lock().await;
+        store.codes.insert("123456".to_owned(), pairing_id.clone());
+        store.pairings.insert(
+            pairing_id.clone(),
+            Pairing {
+                version: PROTOCOL_V2,
+                id: pairing_id,
+                code: "123456".to_owned(),
+                host: "Word".to_owned(),
+                office: 1,
+                office_tx,
+                pc: Some((2, pc_tx)),
+                expires: Instant::now() + Duration::from_secs(60),
+                attempts: 0,
+                requested_capabilities: vec!["agent.v1".to_owned()],
+                negotiated_capabilities: vec!["agent.v1".to_owned()],
+                negotiated_subject: None,
+                features: vec![PAIRING_RESUME.to_owned()],
+                negotiated_features: vec![PAIRING_RESUME.to_owned()],
+                binding_public_key: Some(public_key),
+                pc_subject: Some(subject),
+                pending_binding: None,
+            },
+        );
+    }
+
+    fn test_approval_frame() -> Map<String, Value> {
+        json!({
+            "version": 2,
+            "type": "pc.approve",
+            "pairing_id": "A".repeat(43),
+            "capabilities": ["agent.v1"],
+            "features": [PAIRING_RESUME],
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    async fn test_binding_result_frame(app: &App, result: BindingResult) -> Map<String, Value> {
+        let binding_id = app
+            .inner
+            .state
+            .lock()
+            .await
+            .pairings
+            .get(&"A".repeat(43))
+            .and_then(|pairing| {
+                pairing
+                    .pending_binding
+                    .as_ref()
+                    .map(|pending| pending.id.clone())
+            })
+            .unwrap();
+        json!({
+            "version": 2,
+            "type": match result {
+                BindingResult::Ready => "office.binding_ready",
+                BindingResult::Abort => "office.binding_abort",
+                BindingResult::Committed => "office.binding_committed",
+            },
+            "pairing_id": "A".repeat(43),
+            "binding_id": binding_id,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
 
     #[tokio::test]
     async fn saturated_diagnostic_response_never_marks_connection_failed() {
@@ -2190,5 +4807,660 @@ mod tests {
         assert!(!serialized.contains("secret-session"));
         assert!(!serialized.contains("secret-request"));
         assert!(!serialized.contains("secret-document-data"));
+
+        let resume_audit = protocol_error_log(
+            43,
+            true,
+            r#"{"version":2,"type":"office.prove","binding_id":"secret-binding","challenge":"secret-challenge","signature":"secret-signature","subject_hash":"secret-subject"}"#,
+            "invalid_proof",
+        )
+        .to_string();
+        for secret in [
+            "secret-binding",
+            "secret-challenge",
+            "secret-signature",
+            "secret-subject",
+        ] {
+            assert!(!resume_audit.contains(secret));
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_office_approval_queue_does_not_leave_a_live_binding() {
+        let app = test_app();
+        let (office_sender, _office_receiver) = mpsc::channel(1);
+        office_sender
+            .try_send(Message::Ping(Vec::new().into()))
+            .unwrap();
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(2);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [4_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn saturated_pc_approval_queue_does_not_leave_a_live_binding() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(2);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(1);
+        pc_sender
+            .try_send(Message::Ping(Vec::new().into()))
+            .unwrap();
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [6_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Committed).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Committed).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn post_commit_delivery_failure_compensates_the_new_binding() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(2);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(2);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [5_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+        app.inner
+            .fail_approval_delivery
+            .store(true, Ordering::SeqCst);
+
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Committed).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Committed).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_compensation_denies_resume_until_the_sweeper_converges_revocation() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(4);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [9_u8; 32];
+        insert_test_pairing(&app, office_tx.clone(), pc_tx.clone(), subject).await;
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let committed = test_binding_result_frame(&app, BindingResult::Committed).await;
+        let binding_id = string(&committed, "binding_id").unwrap().to_owned();
+        app.inner
+            .fail_approval_delivery
+            .store(true, Ordering::SeqCst);
+        app.inner.bindings.fail_next_revoke();
+        assert_eq!(
+            office_binding_result(&app, 1, committed, BindingResult::Committed).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+        {
+            let store = app.inner.state.lock().await;
+            assert!(store.denied_bindings.contains(&binding_id));
+            assert!(store.pending_revocations.contains_key(&binding_id));
+            assert!(!store.codes.contains_key("123456"));
+        }
+        let resume = json!({
+            "version": 2,
+            "type": "office.resume",
+            "binding_id": binding_id,
+            "host": "Word",
+            "capabilities": ["agent.v1"],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            office_resume(
+                &app,
+                3,
+                &office_tx,
+                Some(OFFICE_ORIGIN),
+                "2001:db8::9".parse().unwrap(),
+                resume,
+            )
+            .await,
+            Err("binding_unavailable")
+        );
+        {
+            let mut store = app.inner.state.lock().await;
+            expire(&app.inner, &mut store);
+            assert!(!store.denied_bindings.contains(&binding_id));
+            assert!(!store.pending_revocations.contains_key(&binding_id));
+        }
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn approval_delivery_failure_cannot_resume_after_relay_restart() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "wiswork-relay-failed-activation-{}-{unique}.sqlite",
+            std::process::id()
+        ));
+        let app =
+            test_app_with_bindings(Config::default(), BindingStore::open(Some(&path)).unwrap());
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(4);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [11_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let committed = test_binding_result_frame(&app, BindingResult::Committed).await;
+        let binding_id = string(&committed, "binding_id").unwrap().to_owned();
+        app.inner
+            .fail_approval_delivery
+            .store(true, Ordering::SeqCst);
+        app.inner.bindings.fail_next_revoke();
+        assert_eq!(
+            office_binding_result(&app, 1, committed, BindingResult::Committed).await,
+            Err("peer_unavailable")
+        );
+        drop(app);
+
+        let restarted =
+            test_app_with_bindings(Config::default(), BindingStore::open(Some(&path)).unwrap());
+        let (retry_sender, _retry_receiver) = mpsc::channel(2);
+        let retry_tx = Tx {
+            sender: retry_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let resume = json!({
+            "version": 2,
+            "type": "office.resume",
+            "binding_id": binding_id,
+            "host": "Word",
+            "capabilities": ["agent.v1"],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            office_resume(
+                &restarted,
+                3,
+                &retry_tx,
+                Some(OFFICE_ORIGIN),
+                "2001:db8::11".parse().unwrap(),
+                resume,
+            )
+            .await,
+            Err("binding_unavailable")
+        );
+        drop(restarted);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_capacity_failure_compensates_and_terminates_both_approved_peers() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let office_failed = Arc::new(Notify::new());
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: office_failed.clone(),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(4);
+        let pc_failed = Arc::new(Notify::new());
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: pc_failed.clone(),
+        };
+        let subject = [10_u8; 32];
+        insert_test_pairing(&app, office_tx.clone(), pc_tx.clone(), subject).await;
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        {
+            let mut store = app.inner.state.lock().await;
+            let now = Instant::now();
+            for index in 0..10_000 {
+                store.sessions.insert(
+                    format!("dummy-{index}"),
+                    Session {
+                        version: PROTOCOL_V2,
+                        host: "Word".to_owned(),
+                        office: 100,
+                        office_tx: office_tx.clone(),
+                        pc: 101,
+                        pc_tx: pc_tx.clone(),
+                        office_cap: "office".to_owned(),
+                        pc_cap: "pc".to_owned(),
+                        expires: now + Duration::from_secs(60),
+                        absolute_expires: now + Duration::from_secs(60),
+                        resume_until: None,
+                        pc_resume_until: None,
+                        pc_subject: [0; 32],
+                        active: None,
+                        used_requests: VecDeque::new(),
+                        capabilities: vec!["agent.v1".to_owned()],
+                        diagnostics: 0,
+                        diagnostic_window_started: now,
+                        diagnostic_window_count: 0,
+                        binding_id: None,
+                    },
+                );
+            }
+        }
+        let committed = test_binding_result_frame(&app, BindingResult::Committed).await;
+        assert_eq!(
+            office_binding_result(&app, 1, committed, BindingResult::Committed).await,
+            Err("relay_busy")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+        {
+            let store = app.inner.state.lock().await;
+            assert!(!store.codes.contains_key("123456"));
+        }
+        tokio::time::timeout(Duration::from_millis(10), office_failed.notified())
+            .await
+            .expect("Office writer must terminate");
+        tokio::time::timeout(Duration::from_millis(10), pc_failed.notified())
+            .await
+            .expect("PC writer must terminate");
+    }
+
+    #[test]
+    fn challenge_sweeper_removes_entries_at_the_proof_deadline() {
+        let mut store = Store::default();
+        store.resume_challenges.insert(
+            1,
+            ResumeChallenge {
+                binding: Binding {
+                    id: "A".repeat(43),
+                    subject: [1; 32],
+                    public_key: [0; 65],
+                    host: "Word".to_owned(),
+                    origin: OFFICE_ORIGIN.to_owned(),
+                    capabilities: vec!["agent.v1".to_owned()],
+                },
+                challenge: "challenge".to_owned(),
+                expires: Instant::now(),
+            },
+        );
+
+        let app = test_app();
+        expire(&app.inner, &mut store);
+
+        assert!(store.resume_challenges.is_empty());
+        assert!(store.expired_resume_challenges.contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn swept_challenge_still_reports_challenge_expired_to_its_connection() {
+        let app = test_app();
+        app.inner
+            .state
+            .lock()
+            .await
+            .expired_resume_challenges
+            .insert(
+                1,
+                ExpiredResumeChallenge {
+                    binding_hash: Sha256::digest("A".repeat(43).as_bytes()).into(),
+                    challenge_hash: Sha256::digest(b"challenge").into(),
+                    expires: Instant::now() + Duration::from_secs(60),
+                },
+            );
+        let (sender, _receiver) = mpsc::channel(1);
+        let tx = Tx {
+            sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let frame = json!({
+            "version": 2,
+            "type": "office.prove",
+            "binding_id": "A".repeat(43),
+            "challenge": "challenge",
+            "signature": "signature",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut unrelated = frame.clone();
+        unrelated.insert("challenge".to_owned(), Value::String("other".to_owned()));
+        assert_eq!(
+            office_prove(&app, 1, &tx, unrelated).await,
+            Err("invalid_proof")
+        );
+        assert_eq!(
+            office_prove(&app, 1, &tx, frame).await,
+            Err("challenge_expired")
+        );
+    }
+
+    #[tokio::test]
+    async fn sweeper_notifies_both_kinds_of_expired_resume_waiter() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(1);
+        let (pc_sender, mut pc_receiver) = mpsc::channel(1);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let binding = Binding {
+            id: "A".repeat(43),
+            subject: [1; 32],
+            public_key: [0; 65],
+            host: "Word".to_owned(),
+            origin: OFFICE_ORIGIN.to_owned(),
+            capabilities: vec!["agent.v1".to_owned()],
+        };
+        let mut store = Store::default();
+        store.office_resumes.insert(
+            1,
+            OfficeResume {
+                binding,
+                office: 1,
+                office_tx,
+                expires: Instant::now(),
+            },
+        );
+        store.pc_resumes.insert(
+            2,
+            PcResume {
+                binding_id: "A".repeat(43),
+                pc: 2,
+                pc_tx,
+                subject: [1; 32],
+                capabilities: vec!["agent.v1".to_owned()],
+                expires: Instant::now(),
+            },
+        );
+        expire(&app.inner, &mut store);
+        for receiver in [&mut office_receiver, &mut pc_receiver] {
+            let Message::Text(text) = receiver.try_recv().unwrap() else {
+                panic!("expected text frame")
+            };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(frame["code"], "peer_unavailable");
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_binding_offer_aborts_and_degrades_to_a_short_session() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let (pc_sender, mut pc_receiver) = mpsc::channel(4);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        insert_test_pairing(&app, office_tx, pc_tx, [8; 32]).await;
+        {
+            let mut store = app.inner.state.lock().await;
+            let pairing = store.pairings.get_mut(&"A".repeat(43)).unwrap();
+            let (pc, pc_tx) = pairing.pc.clone().unwrap();
+            pairing.pending_binding = Some(PendingBinding {
+                id: "A".repeat(43),
+                pc,
+                pc_tx,
+                subject: pairing.pc_subject.unwrap(),
+                capabilities: pairing.negotiated_capabilities.clone(),
+                phase: PendingBindingPhase::Offered,
+            });
+            pairing.expires = Instant::now();
+        }
+        let late_ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        let duplicate_late_ready = late_ready.clone();
+        assert_eq!(
+            office_binding_result(&app, 1, late_ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let Message::Text(aborted) = office_receiver.recv().await.unwrap() else {
+            panic!("expected binding abort")
+        };
+        let aborted: Value = serde_json::from_str(&aborted).unwrap();
+        assert_eq!(aborted["type"], "office.binding_aborted");
+        let Message::Text(office_approved) = office_receiver.recv().await.unwrap() else {
+            panic!("expected office approval")
+        };
+        let Message::Text(pc_approved) = pc_receiver.recv().await.unwrap() else {
+            panic!("expected pc approval")
+        };
+        for text in [office_approved, pc_approved] {
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(frame["features"], json!([]));
+            assert!(frame.get("binding_id").is_none());
+        }
+        assert_eq!(
+            office_binding_result(&app, 1, duplicate_late_ready, BindingResult::Ready,).await,
+            Ok(())
+        );
+        assert_eq!(app.inner.state.lock().await.sessions.len(), 1);
+    }
+
+    #[test]
+    fn resume_attempt_ip_guard_does_not_grow_past_ten_thousand() {
+        let mut store = Store::default();
+        for index in 0..10_000_u128 {
+            store.resume_attempts.insert(
+                IpAddr::V6(std::net::Ipv6Addr::from(index)),
+                (Instant::now(), 1),
+            );
+        }
+
+        assert_eq!(
+            consume_office_resume_attempt(
+                &mut store,
+                20_001,
+                IpAddr::V6(std::net::Ipv6Addr::from(10_001_u128)),
+                Duration::from_secs(120),
+                20_000,
+            ),
+            Err("relay_busy")
+        );
+        assert_eq!(store.resume_attempts.len(), 10_000);
+        assert!(!store.connection_resume_attempts.contains_key(&20_001));
+    }
+
+    #[tokio::test]
+    async fn global_resume_budget_precedes_binding_lookup_and_ip_tracking() {
+        let config = Config {
+            max_global_resume_attempts: 1,
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let (sender, _receiver) = mpsc::channel(4);
+        let tx = Tx {
+            sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let frame = || {
+            json!({
+                "version": 2,
+                "type": "office.resume",
+                "binding_id": "A".repeat(43),
+                "host": "Word",
+                "capabilities": ["agent.v1"]
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+
+        assert_eq!(
+            office_resume(
+                &app,
+                1,
+                &tx,
+                Some(OFFICE_ORIGIN),
+                "2001:db8::1".parse().unwrap(),
+                frame(),
+            )
+            .await,
+            Err("binding_unavailable")
+        );
+        assert_eq!(app.inner.bindings.get_live_call_count(), 1);
+        for (conn, ip) in [(2, "2001:db8::2"), (3, "2001:db8::3")] {
+            assert_eq!(
+                office_resume(
+                    &app,
+                    conn,
+                    &tx,
+                    Some(OFFICE_ORIGIN),
+                    ip.parse().unwrap(),
+                    frame(),
+                )
+                .await,
+                Err("resume_rate_limited")
+            );
+        }
+        assert_eq!(app.inner.bindings.get_live_call_count(), 1);
+        let store = app.inner.state.lock().await;
+        assert_eq!(store.resume_attempts.len(), 1);
+        assert!(!store.connection_resume_attempts.contains_key(&2));
+        assert!(!store.connection_resume_attempts.contains_key(&3));
+    }
+
+    #[test]
+    fn expired_resume_attempt_window_clears_and_accepts_a_fresh_attempt() {
+        let mut store = Store::default();
+        let window = Duration::from_secs(1);
+        store.global_resume_attempts = (Some(Instant::now() - window - window), 99);
+        store.resume_attempts.insert(
+            "2001:db8::1".parse().unwrap(),
+            (Instant::now() - window - window, 20),
+        );
+
+        assert_eq!(store.resume_attempts.len(), 1);
+        assert_eq!(
+            consume_office_resume_attempt(&mut store, 1, "2001:db8::2".parse().unwrap(), window, 1,),
+            Ok(())
+        );
+        assert_eq!(store.global_resume_attempts.1, 1);
+        assert_eq!(store.resume_attempts.len(), 1);
+        assert!(
+            store
+                .resume_attempts
+                .contains_key(&"2001:db8::2".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn sweeper_releases_the_app_and_binding_database() {
+        let path = std::env::temp_dir().join(format!("wiswork-relay-sweeper-{}.sqlite3", token()));
+        let config = Config {
+            binding_database: Some(path.clone()),
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let weak = Arc::downgrade(&app.inner);
+        let sweeper = spawn_sweeper(&app);
+
+        drop(app);
+        tokio::time::timeout(Duration::from_secs(1), sweeper)
+            .await
+            .expect("sweeper should stop when the app is dropped")
+            .unwrap();
+        assert!(weak.upgrade().is_none());
+        drop(BindingStore::open(Some(&path)).unwrap());
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -7,6 +7,11 @@ const png = 'iVBORw0KGgoAAAA='
 
 function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter {
   return {
+    getPresentationState: vi.fn().mockResolvedValue({
+      slideCount: 1,
+      selectedSlideIndexes: [],
+      api: { v12: true, v14: true, v15: true, v18: true, v110: true },
+    }),
     inspectSlideMasters: vi.fn().mockResolvedValue({
       masters: [
         {

@@ -61,7 +61,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ['project_recovery', /^(?:restore|resume)_presentation_project$/],
   [
     'planning',
-    /^(?:(?:save|read)_presentation_plan|read_presentation_domain_skill|read_presentation_preference_candidates|save_presentation_preference|list_presentation_preferences|delete_presentation_preference|import_presentation_preference|save_presentation_observed_preference|read_presentation_team_identity|create_presentation_team|read_presentation_team|publish_presentation_team_plan|set_presentation_team_member|revoke_presentation_team_member|add_presentation_team_comment|resolve_presentation_team_comment)$/,
+    /^(?:(?:save|read)_presentation_plan|ask_clarification|plan_deck|read_presentation_domain_skill|read_presentation_preference_candidates|save_presentation_preference|list_presentation_preferences|delete_presentation_preference|import_presentation_preference|save_presentation_observed_preference|read_presentation_team_identity|create_presentation_team|read_presentation_team|publish_presentation_team_plan|set_presentation_team_member|revoke_presentation_team_member|add_presentation_team_comment|resolve_presentation_team_comment)$/,
   ],
   [
     'style',
@@ -78,7 +78,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ],
   [
     'baseline',
-    /^(?:read_presentation_baseline(?:_page|_complex_page|_chart_source|_notes|_source_links|_rich_text)?|check_presentation_baseline(?:_windows)?|list_slide_shapes|read_slide_text|read_presentation_page|read_presentation_page_geometry|begin_presentation_edit_observation|complete_presentation_edit_observation|read_presentation_edit_observation|list_presentation_edit_observations|delete_presentation_edit_observation)$/,
+    /^(?:read_presentation_baseline(?:_page|_complex_page|_chart_source|_notes|_source_links|_rich_text)?|check_presentation_baseline(?:_windows)?|get_presentation_state|list_slide_shapes|read_slide_text|read_presentation_page|read_presentation_page_geometry|begin_presentation_edit_observation|complete_presentation_edit_observation|read_presentation_edit_observation|list_presentation_edit_observations|delete_presentation_edit_observation)$/,
   ],
   ['checkpoint', /^(?:save|read)_presentation_page_backup$/],
   [
@@ -95,7 +95,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ],
   [
     'review',
-    /^(?:capture_presentation_page_qa|record_presentation_page_review|read_presentation_qa|read_presentation_page_reviews|compare_presentation_page_structure|verify_slides|screenshot_slide|capture_existing_presentation_change|record_existing_presentation_change_review|capture_existing_presentation_batch_page|record_existing_presentation_batch_page_review|(?:capture|record)_existing_presentation_image_review|(?:capture|record)_existing_presentation_page_change|capture_native_modify_page|record_native_modify_page_review|capture_slide_duplication_page|record_slide_duplication_page_review|capture_slide_master_page|record_slide_master_page_review|(?:capture|review)_(?:package|master)_xml_change|(?:list_presentation_review_comments|add_presentation_review_comment|resolve_presentation_review_comment))$/,
+    /^(?:capture_presentation_page_qa|record_presentation_page_review|read_presentation_qa|read_presentation_page_reviews|compare_presentation_page_structure|verify_slides|review_slide_screenshot|screenshot_slide|capture_existing_presentation_change|record_existing_presentation_change_review|capture_existing_presentation_batch_page|record_existing_presentation_batch_page_review|(?:capture|record)_existing_presentation_image_review|(?:capture|record)_existing_presentation_page_change|capture_native_modify_page|record_native_modify_page_review|capture_slide_duplication_page|record_slide_duplication_page_review|capture_slide_master_page|record_slide_master_page_review|(?:capture|review)_(?:package|master)_xml_change|(?:list_presentation_review_comments|add_presentation_review_comment|resolve_presentation_review_comment))$/,
   ],
   [
     'evidence',
@@ -103,7 +103,7 @@ const PRESENTATION_STAGES: ReadonlyArray<readonly [PresentationStage, RegExp]> =
   ],
   [
     'editing',
-    /^(?:replace_presentation_page|list_presentation_changes|list_existing_presentation_changes|edit_existing_presentation_(?:text|text_range|geometry|table_cell|batch|table_batch)|(?:inspect|undo|resume|reapply|release)_existing_presentation_change|replace_existing_presentation_image|(?:inspect|resume|undo|reapply)_existing_presentation_image_change|(?:stage|reapply|inspect|reconcile|resume|commit|discard|undo|release)_existing_presentation_page_change|reconcile_pending_existing_presentation_page_change|prepare_existing_presentation_(?:composite_revision|text_revision|image_revision|original_page_restore)|(?:inspect|resume|undo|reapply|release)_existing_presentation_batch|(?:stage|inspect|reconcile|resume|discard|commit|undo)_presentation_page_replacement|(?:read|undo|inspect|resume)_presentation_(?:geometry|text)_change|(?:read|inspect|resume|undo)_presentation_image_replacement|edit_presentation_page_(?:text|geometry)|replace_presentation_page_image|edit_slide_(?:text|xml|chart)|(?:inspect|reconcile|resume|undo|discard)_package_xml_change|update_slide_chart_values|(?:inspect|resume|undo|release|reapply)_slide_chart_values_change|duplicate_slide|execute_office_js|inspect_native_modify_batch|resume_native_modify_batch|finalize_native_modify_restore|(?:inspect|reconcile|undo)_slide_duplication)$/,
+    /^(?:set_slide_background|replace_presentation_page|list_presentation_changes|list_existing_presentation_changes|edit_existing_presentation_(?:text|text_range|geometry|table_cell|batch|table_batch)|(?:inspect|undo|resume|reapply|release)_existing_presentation_change|replace_existing_presentation_image|(?:inspect|resume|undo|reapply)_existing_presentation_image_change|(?:stage|reapply|inspect|reconcile|resume|commit|discard|undo|release)_existing_presentation_page_change|reconcile_pending_existing_presentation_page_change|prepare_existing_presentation_(?:composite_revision|text_revision|image_revision|original_page_restore)|(?:inspect|resume|undo|reapply|release)_existing_presentation_batch|(?:stage|inspect|reconcile|resume|discard|commit|undo)_presentation_page_replacement|(?:read|undo|inspect|resume)_presentation_(?:geometry|text)_change|(?:read|inspect|resume|undo)_presentation_image_replacement|edit_presentation_page_(?:text|geometry)|replace_presentation_page_image|edit_slide_(?:text|xml|chart)|(?:inspect|reconcile|resume|undo|discard)_package_xml_change|update_slide_chart_values|(?:inspect|resume|undo|release|reapply)_slide_chart_values_change|duplicate_slide|execute_office_js|inspect_native_modify_batch|resume_native_modify_batch|finalize_native_modify_restore|(?:inspect|reconcile|undo)_slide_duplication)$/,
   ],
 ]
 

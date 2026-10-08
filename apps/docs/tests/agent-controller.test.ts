@@ -35,6 +35,161 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Docs agent controller', () => {
+  it('forwards bounded observations to the standard harness without adding a user turn', () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    controller.restore([
+      { role: 'user', text: 'Review the document' },
+      { role: 'assistant', text: 'Done' },
+    ])
+    expect(controller.appendAssistantContext('Host verification completed.')).toBe(true)
+    expect(controller.messages).toEqual([
+      { role: 'user', text: 'Review the document' },
+      { role: 'assistant', text: 'Done\n\nHost verification completed.' },
+    ])
+    const before = structuredClone(controller.messages)
+    expect(controller.appendAssistantContext('x'.repeat(2_049))).toBe(false)
+    expect(controller.messages).toEqual(before)
+    controller.dispose()
+  })
+
+  it('declines observations while deactivated or disposed', () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    controller.deactivate()
+    expect(controller.appendAssistantContext('Unavailable.')).toBe(false)
+    controller.activate()
+    controller.restore([
+      { role: 'user', text: 'Review' },
+      { role: 'assistant', text: 'Done' },
+    ])
+    expect(controller.appendAssistantContext('Available again.')).toBe(true)
+    controller.dispose()
+    expect(controller.appendAssistantContext('Disposed.')).toBe(false)
+    expect(controller.messages).toEqual([])
+  })
+
+  it('does not append host observations into a running turn', async () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    expect(controller.run('Still working')).toBe(true)
+    await flush()
+    const before = structuredClone(controller.messages)
+    expect(controller.appendAssistantContext('Premature verification.')).toBe(false)
+    expect(controller.messages).toEqual(before)
+    controller.dispose()
+  })
+
+  it('uses Standard when standalone Docs has no Codex IPC handler', async () => {
+    const transport = manualTransport()
+    const api: any = {
+      status: vi.fn(async () => {
+        throw new Error("No handler registered for 'codex:pc-host:status'")
+      }),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'docs', api })
+    controller.activate()
+    await flush()
+    expect(controller.run('standard docs')).toBe(true)
+    await flush()
+    expect(transport.callbacks).toHaveLength(1)
+    controller.dispose()
+  })
+
+  it('selects Enhanced once at activation and never starts the Standard transport', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'docs', api })
+    controller.activate()
+    await flush()
+    expect(controller.appendAssistantContext('Shell-owned observation.')).toBe(false)
+    expect(controller.messages).toEqual([])
+    expect(() => controller.subscribeAcp(() => undefined)()).not.toThrow()
+    expect(controller.run('enhanced docs')).toBe(true)
+    await flush()
+    expect(api.register).toHaveBeenCalledOnce()
+    expect(api.startTurn).toHaveBeenCalledOnce()
+    expect(transport.callbacks).toHaveLength(0)
+    controller.dispose()
+  })
+  it('captures the Docs undo snapshot before a confirmed Enhanced mutation', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    let onToolCall: ((request: any) => void) | undefined
+    let onEvent: ((event: any) => void) | undefined
+    const remembered = vi.fn()
+    const order: string[] = []
+    const enhancedSkill = {
+      id: 'docs-host',
+      systemPrompt: 'system',
+      tools: [{ name: 'replace_blocks', description: 'replace', inputSchema: { type: 'object' } }],
+      executeTool: vi.fn(() => {
+        order.push('execute')
+        return { output: 'ok', summary: 'edited', mutated: true }
+      }),
+    }
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      onEvent: vi.fn((listener: any) => {
+        onEvent = listener
+        return () => undefined
+      }),
+      onToolCall: vi.fn((listener: any) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+      toolResult: vi.fn(async (result: any) =>
+        onEvent?.({
+          type: 'tool-executed',
+          event: {
+            call: { id: result.callId, name: 'replace_blocks', input: {} },
+            execution: result.execution,
+            snapshotBefore: result.snapshotBefore,
+          },
+        }),
+      ),
+    }
+    const controller = createAgentController(
+      {
+        transport,
+        skill: enhancedSkill,
+        captureSnapshot: () => {
+          order.push('snapshot')
+          return { type: 'doc-before' }
+        },
+        events: { onToolExecuted: ({ snapshotBefore }) => remembered(snapshotBefore) },
+      },
+      { host: 'docs', api },
+    )
+    controller.activate()
+    await flush()
+    controller.run('replace')
+    await flush()
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'm1', name: 'replace_blocks', input: {} },
+    })
+    await flush()
+    expect(order).toEqual(['snapshot', 'execute'])
+    expect(remembered).toHaveBeenCalledWith({ type: 'doc-before' })
+    controller.dispose()
+  })
   it('keeps an untitled session on first save but isolates different documents', () => {
     expect(shouldResetAgentSession(null, '/saved.docx')).toBe(false)
     expect(shouldResetAgentSession('/a.docx', '/b.docx')).toBe(true)

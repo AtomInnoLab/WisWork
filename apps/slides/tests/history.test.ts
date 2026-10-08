@@ -2,12 +2,22 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '../src/main/session-state'
 import {
   beginHistoryBatch,
+  acquirePresentationMutationLease,
+  acquirePresentationPersistenceLease,
+  acquirePresentationTransactionLease,
   endHistoryBatch,
   pushHistory,
   registerAiSnapshot,
   restoreAiSnapshot,
   restoreSnapshot,
+  redoSession,
   settleStaleHistoryBatch,
+  sessionHasActivePresentationTransaction,
+  sessionBlocksPresentationClose,
+  SlidesSessionBusyError,
+  undoSession,
+  withPresentationMutationLease,
+  withPresentationPersistenceLease,
 } from '../src/main/session-state'
 
 vi.mock('electron', () => ({
@@ -42,6 +52,133 @@ function setValue(session: Session, value: string): void {
 }
 
 describe('Slides main-process history batching', () => {
+  it('makes transaction and persistence leases mutually exclusive', () => {
+    const session = sessionWith('before')
+    const releaseTransaction = acquirePresentationTransactionLease(session)
+    expect(releaseTransaction).not.toBeNull()
+    expect(sessionHasActivePresentationTransaction(session)).toBe(true)
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    expect(acquirePresentationPersistenceLease(session)).toBeNull()
+    releaseTransaction!()
+
+    const releasePersistence = acquirePresentationPersistenceLease(session)
+    expect(releasePersistence).not.toBeNull()
+    expect(sessionBlocksPresentationClose(session)).toBe(true)
+    expect(acquirePresentationPersistenceLease(session)).toBeNull()
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    expect(acquirePresentationMutationLease(session)).toBeNull()
+    releasePersistence!()
+    const releaseMutation = acquirePresentationMutationLease(session)
+    expect(releaseMutation).not.toBeNull()
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    expect(acquirePresentationPersistenceLease(session)).toBeNull()
+    expect(sessionBlocksPresentationClose(session)).toBe(true)
+    releaseMutation!()
+    expect(acquirePresentationTransactionLease(session)).not.toBeNull()
+  })
+
+  it('blocks ordinary edit, undo, redo, and snapshot restore while a transaction owns the gate', () => {
+    const session = sessionWith('before')
+    pushHistory(session)
+    setValue(session, 'after')
+    const snapshotId = registerAiSnapshot(session, session.undoStack[0]!)
+    const undoBefore = [...session.undoStack]
+    const redoBefore = [...session.redoStack]
+    const release = acquirePresentationTransactionLease(session)!
+
+    const expectBusy = (action: () => unknown) => {
+      try {
+        action()
+        throw new Error('expected busy')
+      } catch (error) {
+        expect(error).toBeInstanceOf(SlidesSessionBusyError)
+        expect((error as SlidesSessionBusyError).code).toBe('slides_session_busy')
+      }
+    }
+    expectBusy(() => pushHistory(session))
+    expectBusy(() => undoSession(session))
+    expectBusy(() => redoSession(session))
+    expectBusy(() => restoreAiSnapshot(session, snapshotId))
+    expect(valueOf(session)).toBe('after')
+    expect(session.undoStack).toEqual(undoBefore)
+    expect(session.redoStack).toEqual(redoBefore)
+
+    release()
+    expect(undoSession(session)).toBe(true)
+    expect(valueOf(session)).toBe('before')
+  })
+
+  it('does not enter a production mutation wrapper while a transaction is paused', async () => {
+    const session = sessionWith('before')
+    const release = acquirePresentationTransactionLease(session)!
+    let entered = false
+
+    await expect(
+      withPresentationMutationLease(session, () => {
+        entered = true
+        setValue(session, 'forbidden')
+      }),
+    ).rejects.toMatchObject({ code: 'slides_session_busy' })
+    expect(entered).toBe(false)
+    expect(valueOf(session)).toBe('before')
+
+    release()
+    await withPresentationMutationLease(session, () => setValue(session, 'after'))
+    expect(valueOf(session)).toBe('after')
+  })
+
+  it('holds the ordinary mutation gate across async work and releases it afterward', async () => {
+    const session = sessionWith('before')
+    let finish!: () => void
+    const paused = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const mutation = withPresentationMutationLease(session, async () => {
+      pushHistory(session)
+      setValue(session, 'intermediate')
+      await paused
+      setValue(session, 'after')
+    })
+
+    await Promise.resolve()
+    expect(valueOf(session)).toBe('intermediate')
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    expect(acquirePresentationPersistenceLease(session)).toBeNull()
+    expect(sessionBlocksPresentationClose(session)).toBe(true)
+
+    finish()
+    await mutation
+    expect(valueOf(session)).toBe('after')
+    const releaseTransaction = acquirePresentationTransactionLease(session)
+    expect(releaseTransaction).not.toBeNull()
+    releaseTransaction!()
+  })
+
+  it('holds Save As persistence ownership across a controlled dialog and releases on cancel', async () => {
+    const session = sessionWith('before')
+    let cancelDialog!: () => void
+    const dialog = new Promise<void>((resolve) => {
+      cancelDialog = resolve
+    })
+    const saveAs = withPresentationPersistenceLease(session, async () => {
+      await dialog
+      return { canceled: true as const }
+    })
+
+    await Promise.resolve()
+    expect(sessionBlocksPresentationClose(session)).toBe(true)
+    expect(acquirePresentationPersistenceLease(session)).toBeNull() // another save/open
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    expect(acquirePresentationMutationLease(session)).toBeNull() // new blank / edit
+
+    cancelDialog()
+    await expect(saveAs).resolves.toEqual({ canceled: true })
+    expect(sessionBlocksPresentationClose(session)).toBe(false)
+    const release = acquirePresentationPersistenceLease(session)
+    expect(release).not.toBeNull()
+    release!()
+  })
+
   it('collapses several edits into one pre-run snapshot', () => {
     const session = sessionWith('before')
     beginHistoryBatch(session)

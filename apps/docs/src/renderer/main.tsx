@@ -4,6 +4,7 @@ import { App } from './App'
 import { LocaleProvider, setModuleLang } from './i18n/locale'
 import type { UiTheme } from '../shared/ipc'
 import '@wiswork/ui/tokens.css'
+import { EnhancedMutationConfirmation } from '@wiswork/ui'
 import './styles.css'
 import './fonts/fonts.css'
 
@@ -32,6 +33,7 @@ async function bootstrap(): Promise<void> {
   createRoot(document.getElementById('root')!).render(
     <LocaleProvider initial={lang}>
       <App />
+      <EnhancedMutationConfirmation api={window.codexRuntime} locale={lang} />
     </LocaleProvider>,
   )
 }

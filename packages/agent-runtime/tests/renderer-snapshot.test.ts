@@ -1,0 +1,237 @@
+import { describe, expect, it, vi } from 'vitest'
+import { createEnhancedRendererClient, createPcHostRegistration } from '../src/renderer'
+
+const mutation = { id: 'call-1', name: 'replace_blocks', input: {} }
+
+describe('enhanced renderer mutation snapshots', () => {
+  it('registers the complete Slides research and whole-deck capability set', () => {
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'deck',
+      generation: 1,
+      skill: {
+        id: 'slides',
+        systemPrompt: 'slides',
+        tools: ['web_search', 'image_search', 'insert-image', 'insert_web_image', 'build_deck'].map(
+          (name) => ({
+            name,
+            description: name,
+            inputSchema: { type: 'object' },
+          }),
+        ),
+        executeTool: vi.fn(),
+      },
+    })
+    expect(registration.tools.map((tool) => tool.name)).toEqual([
+      'web_search',
+      'image_search',
+      'insert-image',
+      'insert_web_image',
+      'build_deck',
+    ])
+    expect(registration.mutatingTools).toEqual(['insert-image', 'insert_web_image', 'build_deck'])
+  })
+
+  it('registers the whole-deck builder as a mutation that requires confirmation', () => {
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'deck',
+      generation: 1,
+      skill: {
+        id: 'slides',
+        systemPrompt: '',
+        tools: [
+          { name: 'plan_deck', description: '', inputSchema: {} },
+          { name: 'build_deck', description: '', inputSchema: {} },
+        ],
+        executeTool: vi.fn(),
+      },
+    })
+    expect(registration.mutatingTools).toEqual(['build_deck'])
+  })
+
+  it('captures before execution and restores the private snapshot on the exact result event', async () => {
+    let toolListener!: (request: any) => void
+    let sessionListener!: (event: any) => void
+    const order: string[] = []
+    const results: any[] = []
+    const bridge: any = {
+      register: vi.fn(async () => undefined),
+      unregister: vi.fn(async () => undefined),
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId: 'doc' })),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      subscribe: (_id: string, listener: any) => {
+        sessionListener = listener
+        return () => undefined
+      },
+      onToolCall: (listener: any) => {
+        toolListener = listener
+        return () => undefined
+      },
+      toolResult: vi.fn(async (result: any) => {
+        results.push(result)
+        sessionListener({
+          type: 'tool-executed',
+          event: {
+            call: mutation,
+            execution: result.execution,
+            snapshotBefore: result.snapshotBefore,
+          },
+        })
+      }),
+    }
+    const snapshot = { type: 'doc-before' }
+    const client = createEnhancedRendererClient(bridge)
+    const session = client.open({
+      host: 'docs',
+      documentId: 'doc',
+      generation: 1,
+      skill: {
+        id: 'docs',
+        systemPrompt: '',
+        tools: [{ name: 'replace_blocks', description: '', inputSchema: {} }],
+        executeTool: vi.fn(() => {
+          order.push('execute')
+          return { output: 'ok', summary: 'ok', mutated: true }
+        }),
+      },
+      captureSnapshot: () => {
+        order.push('snapshot')
+        return snapshot
+      },
+    })
+    const events: any[] = []
+    session.subscribe((event) => events.push(event))
+    toolListener({ documentId: 'doc', generation: 1, call: mutation })
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+    expect(order).toEqual(['snapshot', 'execute'])
+    expect(typeof results[0].snapshotBefore).toBe('string')
+    expect(events.at(-1).event.snapshotBefore).toBe(snapshot)
+  })
+
+  it('does not capture or execute a cancelled proposal and fails closed without snapshot authority', async () => {
+    let toolListener!: (request: any) => void
+    const captureSnapshot = vi.fn()
+    const executeTool = vi.fn()
+    const toolResult = vi.fn(async () => undefined)
+    const bridge: any = {
+      register: vi.fn(async () => undefined),
+      unregister: vi.fn(async () => undefined),
+      status: vi.fn(),
+      startTurn: vi.fn(),
+      cancelTurn: vi.fn(),
+      subscribe: () => () => undefined,
+      onToolCall: (listener: any) => {
+        toolListener = listener
+        return () => undefined
+      },
+      toolResult,
+    }
+    createEnhancedRendererClient(bridge).open({
+      host: 'docs',
+      documentId: 'doc',
+      generation: 1,
+      skill: {
+        id: 'docs',
+        systemPrompt: '',
+        tools: [{ name: 'replace_blocks', description: '', inputSchema: {} }],
+        executeTool,
+      },
+    })
+    expect(captureSnapshot).not.toHaveBeenCalled()
+    expect(executeTool).not.toHaveBeenCalled()
+    toolListener({ documentId: 'doc', generation: 1, call: mutation })
+    await vi.waitFor(() => expect(toolResult).toHaveBeenCalledOnce())
+    expect(executeTool).not.toHaveBeenCalled()
+    expect((toolResult.mock.calls as any)[0][0].execution).toMatchObject({
+      output: 'snapshot_unavailable',
+      isError: true,
+    })
+  })
+
+  it('lets Sheets use its operation transaction and undo when no generic snapshot is supplied', async () => {
+    let toolListener!: (request: any) => void
+    const executeTool = vi.fn(() => ({ output: 'ok', summary: 'applied', mutated: true }))
+    const toolResult = vi.fn(async () => undefined)
+    const bridge: any = {
+      register: vi.fn(async () => undefined),
+      unregister: vi.fn(async () => undefined),
+      status: vi.fn(),
+      startTurn: vi.fn(),
+      cancelTurn: vi.fn(),
+      subscribe: () => () => undefined,
+      onToolCall: (listener: any) => {
+        toolListener = listener
+        return () => undefined
+      },
+      toolResult,
+    }
+    createEnhancedRendererClient(bridge).open({
+      host: 'sheets',
+      documentId: 'sheet',
+      generation: 1,
+      skill: {
+        id: 'sheets',
+        systemPrompt: '',
+        tools: [{ name: 'propose_operations', description: '', inputSchema: {} }],
+        executeTool,
+      },
+    })
+    toolListener({
+      documentId: 'sheet',
+      generation: 1,
+      call: { id: 's1', name: 'propose_operations', input: { operations: [] } },
+    })
+    await vi.waitFor(() => expect(toolResult).toHaveBeenCalledOnce())
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect((toolResult.mock.calls as any)[0][0]).not.toHaveProperty('snapshotBefore')
+    expect((toolResult.mock.calls as any)[0][0].execution).toMatchObject({ mutated: true })
+  })
+
+  it('serializes replacement registrations for the same renderer document', async () => {
+    let registered = false
+    let releaseUnregister!: () => void
+    const unregisterPending = new Promise<void>((resolve) => {
+      releaseUnregister = resolve
+    })
+    const bridge: any = {
+      register: vi.fn(async () => {
+        if (registered) throw new Error('enhanced_document_exists')
+        registered = true
+      }),
+      unregister: vi.fn(async () => {
+        await unregisterPending
+        registered = false
+      }),
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId: 'doc' })),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      subscribe: () => () => undefined,
+      onToolCall: () => () => undefined,
+      toolResult: vi.fn(async () => undefined),
+    }
+    const input: any = {
+      host: 'docs',
+      documentId: 'doc',
+      generation: 1,
+      skill: {
+        id: 'docs',
+        systemPrompt: '',
+        tools: [{ name: 'read_blocks', description: '', inputSchema: {} }],
+        executeTool: vi.fn(),
+      },
+    }
+    const first = createEnhancedRendererClient(bridge).open(input)
+    await first.start({ text: 'first' })
+    void first.close()
+    const second = createEnhancedRendererClient({ ...bridge }).open({ ...input, generation: 2 })
+
+    await Promise.resolve()
+    expect(bridge.register).toHaveBeenCalledOnce()
+    releaseUnregister()
+    await expect(second.start({ text: 'second' })).resolves.toBeUndefined()
+    expect(bridge.register).toHaveBeenCalledTimes(2)
+    await second.close()
+  })
+})

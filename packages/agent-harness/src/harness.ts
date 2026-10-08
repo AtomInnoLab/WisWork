@@ -26,11 +26,19 @@ export interface AgentHarness<_TSnapshot> {
   /** Subscribe to ACP v1 `session/update` notifications for frontend presentation. */
   subscribeAcp(listener: (notification: SessionNotification) => void): () => void
   run(instruction: string, images?: AgentImage[]): boolean
-  resume(messages: readonly AgentMessage[]): boolean
+  resume(input: string | readonly AgentMessage[], images?: AgentImage[]): boolean
   stop(): void
   reset(): void
   restore(messages: readonly AgentMessage[]): void
+  appendAssistantContext(text: string): boolean
   dispose(): void
+  /** Opaque loop-owned authority used by reviewed Enhanced mutation controllers. */
+  suspendToolExecution(
+    result: Promise<import('@wiswork/agent-core').ToolExecution>,
+  ): import('@wiswork/agent-core').ToolExecutionSuspension
+  ownsToolExecutionSuspension(
+    value: import('@wiswork/agent-core').ToolExecutionOutcome,
+  ): value is import('@wiswork/agent-core').ToolExecutionSuspension
 }
 
 export function createAgentHarness<TSnapshot>(
@@ -136,7 +144,56 @@ export function createAgentHarness<TSnapshot>(
         if (!isCurrent(generation)) return
         publish({ status: 'error', busy: false, generation, error })
       },
+      onPresentationClarify: (event) => {
+        if (!isCurrent(generation)) return
+        invoke(() => hostEvents?.onPresentationClarify?.(event))
+      },
+      onPresentationPlan: (event) => {
+        if (!isCurrent(generation)) return
+        invoke(() => hostEvents?.onPresentationPlan?.(event))
+      },
+      onPresentationCorrection: (event) => {
+        if (!isCurrent(generation)) return
+        invoke(() => hostEvents?.onPresentationCorrection?.(event))
+      },
+      onPresentationReceipt: (event) => {
+        if (!isCurrent(generation)) return undefined
+        try {
+          return hostEvents?.onPresentationReceipt?.(event)
+        } catch {
+          return undefined
+        }
+      },
+      onAbandonedPresentationCompletion: (event) => {
+        if (!isCurrent(generation)) return
+        invoke(() => hostEvents?.onAbandonedPresentationCompletion?.(event))
+      },
     }
+  }
+
+  const launch = (
+    instruction: string,
+    images: AgentImage[] | undefined,
+    resume: boolean,
+  ): boolean => {
+    if (disposed || launchPending || loop.busy || !instruction) return false
+    const generation = currentSnapshot.generation + 1
+    loopOptions.events = eventsFor(generation)
+    launchPending = true
+    publish({ status: 'running', busy: true, generation })
+    if (!isCurrent(generation) || !launchPending) return false
+    launchPending = false
+    try {
+      if (resume) loop.resume(instruction, images)
+      else loop.run(instruction, images)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      invoke(() => hostEvents?.onError?.(message))
+      if (isCurrent(generation)) {
+        publish({ status: 'error', busy: false, generation, error: message })
+      }
+    }
+    return true
   }
 
   return {
@@ -160,25 +217,11 @@ export function createAgentHarness<TSnapshot>(
       return () => acpListeners.delete(listener)
     },
     run(instruction, images) {
-      if (disposed || launchPending || loop.busy || !instruction) return false
-      const generation = currentSnapshot.generation + 1
-      loopOptions.events = eventsFor(generation)
-      launchPending = true
-      publish({ status: 'running', busy: true, generation })
-      if (!isCurrent(generation) || !launchPending) return false
-      launchPending = false
-      try {
-        loop.run(instruction, images)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        invoke(() => hostEvents?.onError?.(message))
-        if (isCurrent(generation)) {
-          publish({ status: 'error', busy: false, generation, error: message })
-        }
-      }
-      return true
+      return launch(instruction, images, false)
     },
-    resume(messages) {
+    resume(input, images) {
+      if (typeof input === 'string') return launch(input, images, true)
+      const messages = input
       if (disposed || launchPending || loop.busy) return false
       const restored = parseAgentResumeMessages(messages)
       if (!restored) return false
@@ -214,6 +257,12 @@ export function createAgentHarness<TSnapshot>(
       loop.restore(messages)
       if (loop.messages !== before) publish({ ...currentSnapshot })
     },
+    appendAssistantContext(text) {
+      if (disposed) return false
+      const appended = loop.appendAssistantContext(text)
+      if (appended) publish({ ...currentSnapshot })
+      return appended
+    },
     dispose() {
       if (disposed) return
       disposed = true
@@ -226,6 +275,12 @@ export function createAgentHarness<TSnapshot>(
       }
       listeners.clear()
       acpListeners.clear()
+    },
+    suspendToolExecution(result) {
+      return loop.suspendToolExecution(result)
+    },
+    ownsToolExecutionSuspension(value) {
+      return loop.ownsToolExecutionSuspension(value)
     },
   }
 }

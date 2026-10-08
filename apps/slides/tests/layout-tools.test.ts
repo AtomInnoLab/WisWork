@@ -190,12 +190,132 @@ describe('auditSlideLayout', () => {
     expect(issues.some((s) => s.includes('Text overflow'))).toBe(true)
   })
 
+  it('detects a laid-out line wider than the text box inner width', () => {
+    const slide = slideOf([textNode('t1', box(80, 60, 200, 100), 'x'.repeat(20))])
+    const issues = auditSlideLayout(slide)
+
+    expect(
+      issues.some((issue) => issue.includes('Text overflow (width)') && issue.includes('64px')),
+    ).toBe(true)
+  })
+
   it('decoration layers and large background blocks are excluded', () => {
     const bg = textNode('bg', box(0, 0, 1280, 720), 'Background watermark')
     const deco = { ...textNode('deco', box(100, 100, 400, 200), 'Decoration'), decoration: true }
     const t = textNode('t1', box(150, 150, 400, 200), 'Body')
     const issues = auditSlideLayout(slideOf([bg, deco, t]))
     expect(issues).toHaveLength(0)
+  })
+})
+
+describe('set_speaker_notes tool', () => {
+  const slide = slideOf([])
+
+  it('advertises and writes bounded speaker notes through DeckAccess', async () => {
+    const executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const skill = createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => {},
+      applyDeck: () => {},
+      executePresentationOperation,
+      fitWidthPx: 1280,
+    })
+
+    expect(skill.tools.some((tool) => tool.name === 'set_speaker_notes')).toBe(true)
+    const result = await skill.executeTool({
+      id: 'notes-1',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'Opening\nKey message' },
+    })
+
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slideIndex: 0,
+        operation: { kind: 'set_speaker_notes', notes: 'Opening\nKey message' },
+      }),
+      undefined,
+    )
+    expect(result.mutated).toBe(true)
+    expect(result.isError).not.toBe(true)
+  })
+
+  it('rejects out-of-range slides and oversized notes before host access', async () => {
+    const executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const skill = createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => {},
+      applyDeck: () => {},
+      executePresentationOperation,
+      fitWidthPx: 1280,
+    })
+
+    const missing = await skill.executeTool({
+      id: 'notes-2',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 2, text: 'No target' },
+    })
+    const oversized = await skill.executeTool({
+      id: 'notes-3',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'x'.repeat(12_001) },
+    })
+    const malformed = await skill.executeTool({
+      id: 'notes-3b',
+      name: 'set_speaker_notes',
+      input: { slideIndex: '0', text: null },
+    })
+
+    expect(missing).toMatchObject({ isError: true, mutated: false })
+    expect(oversized).toMatchObject({ isError: true, mutated: false })
+    expect(malformed).toMatchObject({ isError: true, mutated: false })
+    expect(executePresentationOperation).not.toHaveBeenCalled()
+  })
+
+  it('reports a host verification failure without claiming a mutation', async () => {
+    const skill = createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => {},
+      applyDeck: () => {},
+      executePresentationOperation: async (request) => ({
+        receipt: {
+          status: 'uncertain',
+          transactionId: request.transactionId,
+          code: 'write_state_uncertain',
+        },
+        authoritativeState: 'fresh',
+      }),
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'notes-4',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'Verify me' },
+    })
+
+    expect(result).toMatchObject({ isError: true, mutated: true })
   })
 })
 
@@ -211,8 +331,40 @@ describe('execute_layout_script tool', () => {
     getSelectedIds: () => [],
     applySlide: (_i, updated) => {
       applied = updated
+      slide = updated
     },
     applyDeck: () => {},
+    executePresentationOperation: async (request) => {
+      if (!('operations' in request)) throw new Error('expected geometry transaction')
+      const nodes = slide.nodes.map((node) => {
+        const operation = request.operations.find(
+          (item) => 'sourceId' in item && item.sourceId === node.sourceId,
+        )
+        if (!operation || !('geometry' in operation)) return node
+        const geometry = operation.geometry
+        return {
+          ...node,
+          box: box(
+            geometry.x / 0.75,
+            geometry.y / 0.75,
+            geometry.width / 0.75,
+            geometry.height / 0.75,
+            geometry.rotation,
+          ),
+        }
+      })
+      slide = { ...slide, nodes }
+      applied = slide
+      return {
+        receipt: {
+          status: 'applied',
+          transactionId: request.transactionId,
+          resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh',
+      }
+    },
     fitWidthPx: 1280,
   })
 

@@ -7,7 +7,7 @@ export function composeOfficeSkills(
 ): AgentSkill {
   return composeSkills(
     'office',
-    'Office tools are host-scoped. Read tools do not mutate; document writes require confirmation.',
+    'Office tools are host-scoped. Read tools do not mutate. PowerPoint ordinary writes follow the PC-managed session policy; raw Office writes always require confirmation.',
     [shared, host, ...extensions],
   )
 }

@@ -44,7 +44,22 @@ import {
 import { downloadSessionFile } from './agent/session-download.js'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { deployedBuildId, resolveBuildVersion, type BuildVersionState } from './build-version.js'
-import { Markdown } from '@wiswork/ui'
+import {
+  AiTypingIndicator,
+  IconEnter,
+  IconPaperclip,
+  Markdown,
+  PresentationActivityGroup,
+  PresentationEmptyState,
+  PresentationMessage,
+} from '@wiswork/ui'
+import { extractPresentationDesignDocument } from '@wiswork/agent-core'
+import {
+  normalizeLang,
+  translatePresentationVerification,
+  translateRawOfficeConfirmation,
+} from '@wiswork/i18n'
+import { createOfficeWebSkill } from './skills/shared/web-skill.js'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import type { PresentationAttachmentMetadata } from './skills/powerpoint/presentation-attachments.js'
 import {
@@ -55,6 +70,7 @@ import {
   officeWorkspaceMode,
   presentationRolloutEnabled,
 } from '../build-config.js'
+import { officePresentationVerificationFlags } from './agent/presentation-flags.js'
 import {
   createOfficeDiagnostics,
   officeDiagnosticEnvironment,
@@ -69,15 +85,34 @@ import {
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
-import type {
-  OfficePresentationEvent,
+import {
+  presentationProgressLabel,
+  type OfficePresentationEvent,
+  OfficeClarificationQuestion,
+  OfficePresentationTimeline,
   ProposalPresentationEvent,
 } from './agent/presentation-state.js'
-import { createPcBridgeSession } from './pc-bridge/session.js'
-import { createOfficeRelaySession, officeTransportMode } from './relay/session.js'
+import { createPcBridgeSession, type PcBridgeSession } from './pc-bridge/session.js'
+import {
+  createOfficeRelaySession,
+  officeTransportMode,
+  type OfficeRelaySession,
+  type OfficeRelaySnapshot,
+  type OfficeRelayStatus,
+} from './relay/session.js'
+import type { PresentationVerificationStringKey } from '@wiswork/i18n'
+import { rawOfficeCapabilities } from './agent/enhanced-session.js'
+import { OfficeDesignPanel, type OfficeDesignRequest } from './OfficeDesignPanel.js'
+import { createOfficeDesignRequest } from './relay/design-document.js'
+
+export const officePresentationText = (
+  locale: string | null | undefined,
+  key: PresentationVerificationStringKey,
+) => translatePresentationVerification(normalizeLang(locale), key)
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
+  type OfficeDocumentClient,
   type OfficeHost,
 } from './office-document.js'
 
@@ -98,6 +133,76 @@ const agentProductLabels: Record<OfficeHost, string> = {
   excel: 'AI Sheets',
   powerpoint: 'AI Slides',
   unknown: 'WisWork AI',
+}
+
+export function officeRuntimeModeForTaskpane(
+  host: OfficeHost,
+  snapshot: {
+    readonly status: string
+    readonly enhanced?: { readonly host: string; readonly expires_at: number }
+  },
+  now = Date.now(),
+): 'standard' | 'enhanced' {
+  return snapshot.status === 'connected' &&
+    host !== 'unknown' &&
+    snapshot.enhanced?.host === `office-${host}` &&
+    snapshot.enhanced.expires_at > now
+    ? 'enhanced'
+    : 'standard'
+}
+
+export function relayConnectionPresentation(
+  status: OfficeRelayStatus | 'signed_out',
+  verificationCode?: string,
+) {
+  const detail = {
+    offline: 'Connect again to create a new secure pairing with WisWork PC.',
+    connecting: 'Connecting securely to the WisWork Office Relay…',
+    reconnecting: 'Reconnecting to WisWork PC…',
+    signed_out: 'Sign in to WisWork PC first.',
+    pending: verificationCode
+      ? `Enter code ${verificationCode} in WisWork PC, then approve the matching request.`
+      : 'Enter the pairing code in WisWork PC.',
+    waiting_for_pc: verificationCode
+      ? `Enter code ${verificationCode} in WisWork PC to continue.`
+      : 'Waiting for a signed-in WisWork PC.',
+    rejected: 'The connection was rejected in WisWork PC.',
+    expired: 'The connection request expired. Try again.',
+    incompatible: 'Upgrade Office Relay, then connect again.',
+    pc_incompatible: 'Upgrade WisWork PC, then connect again.',
+    connected: '',
+  }[status]
+  const busy = status === 'connecting' || status === 'reconnecting' || status === 'pending'
+  return Object.freeze({
+    title:
+      status === 'reconnecting'
+        ? 'Reconnecting to WisWork PC…'
+        : status === 'waiting_for_pc' && !verificationCode
+          ? 'Waiting for WisWork PC'
+          : 'Connect to WisWork PC',
+    detail,
+    busy,
+    actionDisabled: busy,
+  })
+}
+
+export function shouldResetOfficeSession(status: OfficeRelayStatus | 'signed_out'): boolean {
+  return status === 'rejected' || status === 'expired' || status === 'signed_out'
+}
+
+export function shouldShowRelayStatusScreen(
+  status: OfficeRelayStatus | 'signed_out',
+  hasWorkspace: boolean,
+): boolean {
+  if (status === 'connected') return false
+  if (!hasWorkspace) return true
+  return !['connecting', 'reconnecting', 'waiting_for_pc'].includes(status)
+}
+
+export function relayPersistenceNotice(snapshot: OfficeRelaySnapshot): string | undefined {
+  return snapshot.status === 'connected' && snapshot.remembered === false
+    ? 'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
+    : undefined
 }
 
 type DisplayProposal = OfficeProposal | StructuredProposal
@@ -162,6 +267,12 @@ function proposalTarget(target: string, host?: string): string {
     .join(' · ')
 }
 
+function isDisplaySafeProposalTarget(target: string): boolean {
+  // Office object-path identifiers are implementation details and are not stable or meaningful
+  // enough for a user confirmation surface.
+  return !/^\d+(?:#\d+)+$/.test(target)
+}
+
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
   const hasComparison =
@@ -186,7 +297,9 @@ export function proposalPresentation(proposal: DisplayProposal) {
     count: legacy ? undefined : proposal.impact.count,
     targets: legacy
       ? []
-      : proposal.impact.targets.map((target) => proposalTarget(target, proposal.impact.host)),
+      : proposal.impact.targets
+          .filter(isDisplaySafeProposalTarget)
+          .map((target) => proposalTarget(target, proposal.impact.host)),
     before,
     after,
     preview:
@@ -498,6 +611,19 @@ function ProposalReview(props: {
     isLegacyProposal(event.proposal) ||
     (event.proposal.before !== undefined && event.proposal.after !== undefined)
   const canReview = event.state === 'pending' && props.activeProposalId === event.proposal.id
+  if (event.state === 'applied') {
+    return (
+      <article className="proposal-result" aria-label="Document change completed">
+        <span className="proposal-result-icon" aria-hidden="true">
+          ✓
+        </span>
+        <div>
+          <h2>{presentation.title}</h2>
+          {!isLegacyProposal(event.proposal) && <p>已更新 {presentation.count} 项</p>}
+        </div>
+      </article>
+    )
+  }
   return (
     <article
       className={`proposal-card proposal-${event.state}`}
@@ -509,8 +635,8 @@ function ProposalReview(props: {
             ? 'Approval required'
             : event.state === 'applying'
               ? 'Applying approved change'
-              : event.state === 'applied'
-                ? 'Change applied'
+              : event.state === 'uncertain'
+                ? 'Write status uncertain'
                 : event.state === 'rejected'
                   ? 'Change rejected'
                   : 'Change failed'}
@@ -524,22 +650,24 @@ function ProposalReview(props: {
           <span>{presentation.targets.join(', ') || 'No named targets'}</span>
         </div>
       )}
-      <details className="proposal-preview" open>
-        <summary>Review exact impact</summary>
-        {hasComparison && (
-          <div className="proposal-diff">
-            <div className="preview-block">
-              <strong>Before</strong>
-              <p className="proposal-copy">{presentation.before || '(empty document)'}</p>
+      {(hasComparison || presentation.preview) && (
+        <details className="proposal-preview" open>
+          <summary>查看修改内容</summary>
+          {hasComparison && (
+            <div className="proposal-diff">
+              <div className="preview-block">
+                <strong>修改前</strong>
+                <p className="proposal-copy">{presentation.before || '空白内容'}</p>
+              </div>
+              <div className="preview-block after">
+                <strong>修改后</strong>
+                <p className="proposal-copy">{presentation.after || '空白内容'}</p>
+              </div>
             </div>
-            <div className="preview-block after">
-              <strong>After</strong>
-              <p className="proposal-copy">{presentation.after || '(empty document)'}</p>
-            </div>
-          </div>
-        )}
-        {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
-      </details>
+          )}
+          {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
+        </details>
+      )}
       {event.error && <p className="error-text">{event.error}</p>}
       {presentation.lockReview && (
         <div className="proposal-lock-review" role="status">
@@ -602,6 +730,7 @@ function TimelineEvent(props: {
   applying: boolean
   confirm: (id: string) => void
   reject: () => void
+  presentationParity?: boolean
 }) {
   const { event } = props
   if (event.kind === 'proposal') return <ProposalReview {...props} event={event} />
@@ -611,6 +740,17 @@ function TimelineEvent(props: {
         <span className="tool-indicator" aria-hidden="true" />
         <p>{event.summary}</p>
       </article>
+    )
+  }
+  if (props.presentationParity) {
+    if (event.kind === 'system') {
+      return <div className="ai-msg ai-msg-system">{event.text}</div>
+    }
+    const role = event.kind === 'user' ? 'user' : event.kind === 'error' ? 'error' : 'assistant'
+    return (
+      <PresentationMessage role={role} streaming={event.kind === 'assistant' && event.streaming}>
+        {event.kind === 'assistant' ? <Markdown text={event.text} /> : event.text}
+      </PresentationMessage>
     )
   }
   return (
@@ -627,6 +767,240 @@ function TimelineEvent(props: {
   )
 }
 
+export function presentationDesignLifecycle(output: string | undefined) {
+  if (!output) return undefined
+  try {
+    const value = JSON.parse(output) as { status?: unknown; revision?: unknown }
+    const status = typeof value.status === 'string' ? value.status : 'draft'
+    const revision = typeof value.revision === 'number' ? value.revision : 1
+    return {
+      editable: status === 'draft' || status === 'ready',
+      label:
+        status === 'verified'
+          ? 'DESIGN.md · 已验证'
+          : status === 'ready' || status === 'producing'
+            ? 'DESIGN.md · 已锁定'
+            : revision > 1
+              ? 'DESIGN.md · 已修订'
+              : 'DESIGN.md · 已创建',
+    }
+  } catch {
+    return { editable: true, label: 'DESIGN.md · 已创建' }
+  }
+}
+
+function PowerPointTimeline(props: {
+  timeline: OfficePresentationTimeline
+  groupStages?: boolean
+  latestDesignToolId?: string
+  activeProposalId?: string
+  busy: boolean
+  applying: boolean
+  activity: string
+  confirm: (id: string) => void
+  reject: () => void
+  onOpenDesign: (designMd: string, editable: boolean) => void
+}) {
+  const toolDetail = (
+    tool: Extract<OfficePresentationEvent, { kind: 'tool' }>,
+  ): React.ReactNode | undefined => {
+    if (tool.display?.kind === 'images' && tool.display.items?.length) {
+      return (
+        <div className="ai-tool-display-images">
+          {tool.display.items.map((item) => (
+            <a key={item.url} href={item.url} target="_blank" rel="noreferrer">
+              {item.thumb?.startsWith('data:image/') ? (
+                <img src={item.thumb} alt={item.title || ''} />
+              ) : (
+                item.title || item.url
+              )}
+            </a>
+          ))}
+        </div>
+      )
+    }
+    if (tool.display?.kind === 'links' && tool.display.items?.length) {
+      return (
+        <ul className="ai-tool-display-links">
+          {tool.display.items.map((item) => (
+            <li key={item.url}>
+              <a href={item.url} target="_blank" rel="noreferrer">
+                {item.title || item.url}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+    const text = tool.display?.kind === 'text' ? tool.display.text : tool.output
+    return text ? <pre className="ai-tool-display-text">{text}</pre> : undefined
+  }
+  const nodes: React.ReactNode[] = []
+  const latestDesignToolId =
+    props.latestDesignToolId ??
+    [...props.timeline]
+      .reverse()
+      .find(
+        (event) =>
+          event.kind === 'tool' && Boolean(extractPresentationDesignDocument(event.output ?? '')),
+      )?.id
+  const timelineItems =
+    props.groupStages === false ? props.timeline : presentationStageTimeline(props.timeline)
+  const latestRequestIndex = timelineItems.reduce(
+    (last, event, index) => (event.kind === 'user' ? index : last),
+    -1,
+  )
+  let index = 0
+  while (index < timelineItems.length) {
+    const event = timelineItems[index]!
+    if (event.kind === 'stage') {
+      nodes.push(
+        <PresentationStageCard
+          key={event.id}
+          group={event}
+          runActive={(props.busy || props.applying) && index > latestRequestIndex}
+        >
+          <PowerPointTimeline
+            {...props}
+            timeline={event.events}
+            groupStages={false}
+            latestDesignToolId={latestDesignToolId}
+          />
+        </PresentationStageCard>,
+      )
+      index += 1
+      continue
+    }
+    if (event.kind === 'phase') {
+      nodes.push(
+        <div className="ai-phase-row" key={event.id}>
+          {event.text}…
+        </div>,
+      )
+      index += 1
+      continue
+    }
+    if (event.kind !== 'tool') {
+      nodes.push(
+        <TimelineEvent
+          key={event.id}
+          event={event}
+          activeProposalId={props.activeProposalId}
+          busy={props.busy}
+          applying={props.applying}
+          confirm={props.confirm}
+          reject={props.reject}
+          presentationParity
+        />,
+      )
+      index += 1
+      continue
+    }
+    const tools = []
+    while (index < timelineItems.length && timelineItems[index]?.kind === 'tool') {
+      const tool = timelineItems[index] as Extract<OfficePresentationEvent, { kind: 'tool' }>
+      const designMd = extractPresentationDesignDocument(tool.output ?? '')
+      const lifecycle = designMd ? presentationDesignLifecycle(tool.output) : undefined
+      tools.push({
+        id: tool.callId,
+        label: lifecycle?.label ?? tool.summary,
+        status:
+          tool.state === 'running'
+            ? ('running' as const)
+            : tool.state === 'error'
+              ? ('error' as const)
+              : ('done' as const),
+        ...(designMd
+          ? {
+              onActivate: () =>
+                props.onOpenDesign(
+                  designMd,
+                  tool.id === latestDesignToolId && lifecycle?.editable === true,
+                ),
+            }
+          : { detail: toolDetail(tool) }),
+      })
+      index += 1
+    }
+    nodes.push(
+      <PresentationActivityGroup
+        key={`tools:${tools[0]?.id}`}
+        items={tools}
+        workingLabel="处理中…"
+        workedLabel={(count) => `已完成 · ${count} 个步骤`}
+      />,
+    )
+  }
+  const lastEvent = props.timeline.at(-1)
+  const waitingForFirstAgentEvent = !lastEvent || lastEvent.kind === 'user'
+  const streamingAssistant = lastEvent?.kind === 'assistant' && lastEvent.streaming
+  if (props.busy && (waitingForFirstAgentEvent || streamingAssistant)) {
+    nodes.push(
+      <div className="ai-typing-row" key="active-agent-work">
+        <AiTypingIndicator label={presentationProgressLabel(props.timeline)} />
+      </div>,
+    )
+  }
+  return <>{nodes}</>
+}
+
+function PowerPointQuestionnaire(props: {
+  questions: readonly OfficeClarificationQuestion[]
+  onSubmit: (answers: string) => void
+  onSkip: () => void
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [activeIndex, setActiveIndex] = useState(0)
+  const question = props.questions[activeIndex]
+  const finish = (nextAnswers: Record<string, string>) =>
+    props.onSubmit(
+      props.questions
+        .map((item) => `${item.label}: ${nextAnswers[item.id] || '（帮我决定）'}`)
+        .join('\n'),
+    )
+  const advance = (delegated = false) => {
+    if (!question) return
+    const nextAnswers = delegated ? { ...answers, [question.id]: '' } : answers
+    if (activeIndex + 1 < props.questions.length) {
+      setAnswers(nextAnswers)
+      setActiveIndex((current) => current + 1)
+    } else finish(nextAnswers)
+  }
+  if (!question) return null
+  return (
+    <section className="ppt-questionnaire" aria-label="演示文稿制作问卷">
+      <p className="ppt-questionnaire-progress">
+        {activeIndex + 1} / {props.questions.length}
+      </p>
+      <label key={question.id}>
+        <strong>{question.label}</strong>
+        {question.description && <span>{question.description}</span>}
+        <select
+          value={answers[question.id] ?? ''}
+          onChange={(event) =>
+            setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
+          }
+        >
+          <option value="">帮我决定</option>
+          {question.options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="ppt-questionnaire-actions">
+        <button type="button" className="secondary" onClick={() => advance(true)}>
+          帮我决定
+        </button>
+        <button type="button" onClick={() => advance()}>
+          {activeIndex + 1 < props.questions.length ? '下一题' : '继续制作'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export function AgentWorkspace(props: {
   session: OfficeAgentSession
   ui: OfficeWorkspaceUi
@@ -634,6 +1008,11 @@ export function AgentWorkspace(props: {
   host: OfficeHost
   initialPanel?: WorkspacePanelName
   legacy?: boolean
+  connectionNotice?: string
+  runtimeMode?: 'standard' | 'enhanced'
+  connectionAvailable?: boolean
+  designRequest?: OfficeDesignRequest
+  repairDesignConnection?: () => void | Promise<void>
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -657,9 +1036,19 @@ export function AgentWorkspace(props: {
   const [pastedSource, setPastedSource] = useState('')
   const uploadEpoch = useRef(0)
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
+  const [designEditor, setDesignEditor] = useState<{
+    markdown: string
+    editable: boolean
+  }>()
+  const [designConversation, setDesignConversation] = useState<{
+    session: OfficeAgentSession
+    generation: number
+    current?: { markdown: string; sourceId: string }
+  }>({ session, generation: 0 })
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
+  const composerFileInput = useRef<HTMLInputElement>(null)
   const panelOpener = useRef<HTMLElement | undefined>(undefined)
   const timeline = useRef<HTMLElement>(null)
   const followLatest = useRef(true)
@@ -706,6 +1095,7 @@ export function AgentWorkspace(props: {
 
   function send() {
     if (
+      props.connectionAvailable === false ||
       !instruction.trim() ||
       state.busy ||
       uploadPending ||
@@ -718,29 +1108,100 @@ export function AgentWorkspace(props: {
     setInstruction('')
   }
 
+  async function uploadFiles(selected: FileList | readonly File[]) {
+    if (
+      uploadPending ||
+      state.busy ||
+      state.applying ||
+      projectPhase !== 'idle' ||
+      props.connectionAvailable === false
+    )
+      return
+    const captured = ++uploadEpoch.current
+    const current = () => mounted.current && captured === uploadEpoch.current
+    setUploadError('')
+    setUploadPending(true)
+    setUploadStatus('正在上传…')
+    try {
+      for (const file of Array.from(selected)) {
+        if (!current()) break
+        try {
+          await ui.upload(file)
+          if (current()) setUploadStatus(`${file.name} 已上传，可让 Agent 读取。`)
+        } catch (error) {
+          if (current()) {
+            setUploadStatus('')
+            setUploadError(safeUploadError(error, file))
+          }
+          break
+        }
+      }
+      if (current()) setFiles(ui.attachments())
+      const items = await ui.listDurableAttachments?.().catch(() => undefined)
+      if (current() && items) setDurableFiles(items)
+    } finally {
+      if (current()) setUploadPending(false)
+    }
+  }
+
   const proposal = state.proposal
+  const latestDesign = [...state.timeline]
+    .reverse()
+    .find(
+      (event) =>
+        event.kind === 'tool' && Boolean(extractPresentationDesignDocument(event.output ?? '')),
+    )
+  const latestDesignDocument =
+    latestDesign?.kind === 'tool'
+      ? {
+          markdown: extractPresentationDesignDocument(latestDesign.output ?? '')!,
+          sourceId: latestDesign.id,
+        }
+      : undefined
+  // The timeline is a rolling activity window, not the lifetime of DESIGN.md.
+  // Reset synchronously on session replacement so a previous PC draft cannot
+  // appear in the new session even when its timeline reuses the same event IDs.
+  if (designConversation.session !== session) {
+    setDesignConversation({
+      session,
+      generation: designConversation.generation + 1,
+      current: latestDesignDocument,
+    })
+    setDesignEditor(undefined)
+  } else if (
+    latestDesignDocument &&
+    (latestDesignDocument.sourceId !== designConversation.current?.sourceId ||
+      latestDesignDocument.markdown !== designConversation.current?.markdown)
+  ) {
+    setDesignConversation({ ...designConversation, current: latestDesignDocument })
+  }
+  const currentDesign =
+    latestDesignDocument ??
+    (designConversation.session === session ? designConversation.current : undefined)
   const hasTimeline = state.timeline.length > 0
-  const timelineItems =
-    host === 'powerpoint' ? presentationStageTimeline(state.timeline) : state.timeline
-  const latestRequestIndex = timelineItems.reduce(
-    (latest, event, index) => (event.kind === 'user' ? index : latest),
-    -1,
-  )
   const showConversationChrome =
     hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
+  const showHeader = showConversationChrome || host === 'powerpoint'
   const showStatus =
-    state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled'
+    host !== 'powerpoint' &&
+    (state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled')
 
   return (
     <main
-      className={`agent-workspace ${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
+      className={`agent-workspace ${host === 'powerpoint' ? 'presentation-agent ' : ''}${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : `is-empty ${showHeader ? 'has-empty-header' : ''}`}`}
       aria-busy={state.busy || state.applying}
     >
-      {showConversationChrome && (
+      {showHeader && (
         <header className="app-header">
           <div className="editor-identity">
             <span className="connection-dot" aria-hidden="true" />
-            <h1>{agentProductLabels[host]}</h1>
+            <div>
+              <h1>{agentProductLabels[host]}</h1>
+              <p className="runtime-mode" aria-label="由 WisWork PC 管理的 Agent 模式">
+                {props.runtimeMode === 'enhanced' ? '增强模式' : '标准模式'}
+                <span>由 WisWork PC 管理</span>
+              </p>
+            </div>
             <span className="visually-hidden">Connected to WisWork PC</span>
           </div>
           <div className="header-actions">
@@ -757,6 +1218,11 @@ export function AgentWorkspace(props: {
                 setSkills([])
                 setPanel(undefined)
                 setUploadError('')
+                setDesignEditor(undefined)
+                setDesignConversation((current) => ({
+                  session,
+                  generation: current.generation + 1,
+                }))
               }}
             >
               新对话
@@ -828,6 +1294,12 @@ export function AgentWorkspace(props: {
         </p>
       )}
 
+      {props.connectionNotice && (
+        <p className="diagnostic-status" role="status">
+          {props.connectionNotice}
+        </p>
+      )}
+
       {showStatus && (
         <section className="agent-status" aria-live="polite">
           <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
@@ -842,6 +1314,18 @@ export function AgentWorkspace(props: {
         </section>
       )}
 
+      {host === 'powerpoint' && (
+        <OfficeDesignPanel
+          key={designConversation.generation}
+          current={currentDesign}
+          selection={designEditor}
+          busy={state.busy || state.applying || props.connectionAvailable === false}
+          request={props.designRequest}
+          onRepairConnection={props.repairDesignConnection}
+          onApply={(markdown) => session.reviseDesignContract?.(markdown)}
+        />
+      )}
+
       <section
         ref={timeline}
         className="agent-timeline"
@@ -851,7 +1335,15 @@ export function AgentWorkspace(props: {
           followLatest.current = isTimelineNearBottom(event.currentTarget)
         }}
       >
-        {!hasTimeline && (
+        {!hasTimeline && host === 'powerpoint' && (
+          <PresentationEmptyState
+            title="让 AI 为你生成演示文稿"
+            body="描述主题、场合和大致页数，AI 直接生成整份幻灯片。"
+            prompts={starterPrompts.powerpoint}
+            onChoose={setInstruction}
+          />
+        )}
+        {!hasTimeline && host !== 'powerpoint' && (
           <div className="empty-state">
             <h2>让 AI 帮你从零起草</h2>
             <p>
@@ -873,14 +1365,21 @@ export function AgentWorkspace(props: {
             </div>
           </div>
         )}
-        {timelineItems.map((event, index) =>
-          event.kind === 'stage' ? (
-            <PresentationStageCard
-              key={event.id}
-              group={event}
-              runActive={(state.busy || state.applying) && index > latestRequestIndex}
-            />
-          ) : (
+        {host === 'powerpoint' ? (
+          <PowerPointTimeline
+            timeline={state.timeline}
+            activeProposalId={proposal?.id}
+            busy={state.busy}
+            applying={state.applying}
+            activity={state.activity}
+            confirm={(id) => void session.confirm(id)}
+            reject={() => session.reject()}
+            onOpenDesign={(designMd, editable) => {
+              setDesignEditor({ markdown: designMd, editable })
+            }}
+          />
+        ) : (
+          state.timeline.map((event) => (
             <TimelineEvent
               key={event.id}
               event={event}
@@ -890,7 +1389,14 @@ export function AgentWorkspace(props: {
               confirm={(id) => void session.confirm(id)}
               reject={() => session.reject()}
             />
-          ),
+          ))
+        )}
+        {state.questionnaire && (
+          <PowerPointQuestionnaire
+            questions={state.questionnaire}
+            onSubmit={(answers) => session.answerQuestionnaire?.(answers)}
+            onSkip={() => session.skipQuestionnaire?.()}
+          />
         )}
         {state.recoveryAvailable && (
           <button
@@ -1749,72 +2255,113 @@ export function AgentWorkspace(props: {
                 ))}
             </section>
           )}
-        <label className="visually-hidden" htmlFor="instruction">
-          Message WisWork Agent
-        </label>
-        <textarea
-          id="instruction"
-          value={instruction}
-          onChange={(event) => setInstruction(event.target.value)}
-          onKeyDown={(event) => {
-            if (
-              composerKeyAction({
-                key: event.key,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing,
-              }) === 'send'
-            ) {
-              event.preventDefault()
-              send()
-            }
-          }}
-          placeholder="描述修改、写作要求，或直接提问"
-          rows={3}
-          maxLength={12_000}
-          disabled={state.busy || state.applying}
-        />
-        <div className="composer-toolbar">
-          <div className="composer-tools">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Attachments"
-              aria-expanded={panel === 'attachments'}
-              disabled={state.applying}
-              onClick={(event) => {
-                panelOpener.current = event.currentTarget
-                setPanel(panel === 'attachments' ? undefined : 'attachments')
-              }}
-            >
-              📎
-            </button>
-            <span className="confirmation-chip">
-              <span aria-hidden="true" />
-              更改需确认
-            </span>
-          </div>
-          {state.busy || state.applying ? (
-            <button type="button" className="stop-button" onClick={() => session.stop()}>
-              Stop
-            </button>
-          ) : (
-            <button
-              className="send-button"
-              type="button"
-              aria-label="Send message"
-              disabled={
-                !instruction.trim() ||
-                uploadPending ||
-                state.applying ||
-                Boolean(state.proposal) ||
-                projectPhase !== 'idle'
-              }
-              onClick={send}
-            >
-              ↑
-            </button>
+        <div className="composer-input-box">
+          {files.length > 0 && (
+            <div className="composer-attachments" aria-label="Attached files">
+              {files.map((file) => (
+                <span key={file}>{file.split('/').at(-1)}</span>
+              ))}
+            </div>
           )}
+          <label className="visually-hidden" htmlFor="instruction">
+            Message WisWork Agent
+          </label>
+          <textarea
+            id="instruction"
+            value={instruction}
+            onChange={(event) => setInstruction(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                composerKeyAction({
+                  key: event.key,
+                  shiftKey: event.shiftKey,
+                  isComposing: event.nativeEvent.isComposing,
+                }) === 'send'
+              ) {
+                event.preventDefault()
+                send()
+              }
+            }}
+            placeholder={
+              host === 'powerpoint'
+                ? '描述要生成的演示文稿，或直接提问'
+                : '描述修改、写作要求，或直接提问'
+            }
+            rows={3}
+            maxLength={12_000}
+            disabled={props.connectionAvailable === false || state.busy || state.applying}
+          />
+          <div className="composer-toolbar">
+            <div className="composer-tools">
+              <input
+                ref={composerFileInput}
+                id="composer-attachment-upload"
+                className="visually-hidden"
+                type="file"
+                multiple
+                disabled={state.applying || state.busy || uploadPending || projectPhase !== 'idle'}
+                onChange={(event) => {
+                  const selected = event.currentTarget.files
+                  if (selected?.length) void uploadFiles(selected)
+                  event.currentTarget.value = ''
+                }}
+              />
+              <button
+                type="button"
+                className="composer-attach-button"
+                aria-label="Add attachments"
+                disabled={state.applying || state.busy || uploadPending || projectPhase !== 'idle'}
+                onClick={() => composerFileInput.current?.click()}
+              >
+                <IconPaperclip size={20} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Attachments"
+                aria-expanded={panel === 'attachments'}
+                disabled={state.applying}
+                onClick={(event) => {
+                  panelOpener.current = event.currentTarget
+                  setPanel(panel === 'attachments' ? undefined : 'attachments')
+                }}
+              >
+                管理附件
+              </button>
+              <span className="confirmation-chip">
+                <span aria-hidden="true" />
+                {host === 'powerpoint' && !ui.project ? '自动应用常规更改' : '更改需确认'}
+              </span>
+            </div>
+            {state.busy || state.applying ? (
+              <button type="button" className="stop-button" onClick={() => session.stop()}>
+                Stop
+              </button>
+            ) : (
+              <button
+                className="send-button"
+                type="button"
+                aria-label="Send message"
+                disabled={
+                  props.connectionAvailable === false ||
+                  !instruction.trim() ||
+                  state.applying ||
+                  uploadPending ||
+                  Boolean(state.proposal) ||
+                  projectPhase !== 'idle'
+                }
+                onClick={send}
+              >
+                <IconEnter size={22} />
+              </button>
+            )}
+          </div>
         </div>
+        {uploadError && (
+          <p className="composer-upload-error error-text" role="alert">
+            {uploadError}
+          </p>
+        )}
       </section>
     </main>
   )
@@ -1825,6 +2372,7 @@ export function LegacyAgentWorkspace(props: {
   ui: OfficeWorkspaceUi
   disconnect: () => void
   host: OfficeHost
+  connectionNotice?: string
 }) {
   return <AgentWorkspace {...props} legacy />
 }
@@ -1833,8 +2381,24 @@ export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
   return mode === 'legacy' ? LegacyAgentWorkspace : AgentWorkspace
 }
 
-function ConfiguredApp() {
-  const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
+type ConnectionBridge = PcBridgeSession | OfficeRelaySession
+
+export function ConfiguredApp(
+  props: {
+    documentClient?: OfficeDocumentClient
+    connectionBridge?: ConnectionBridge
+    workspaceFactory?: (dependencies: {
+      host: Exclude<OfficeHost, 'unknown'>
+      document: OfficeDocumentClient
+      bridge: ConnectionBridge
+    }) => { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi }
+  } = {},
+) {
+  const workspaceFactory = props.workspaceFactory
+  const document = useMemo(
+    () => props.documentClient ?? createOfficeDocumentClient(createBrowserOfficeRuntime()),
+    [props.documentClient],
+  )
   const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
   const teamRuntime = useRef<OfficeHostRuntime | undefined>(undefined)
   const teamConnection = useMemo(() => {
@@ -1854,7 +2418,8 @@ function ConfiguredApp() {
   const diagnosticSamplePercent = useMemo(() => officeDiagnosticSamplePercent(import.meta.env), [])
   const bridge = useMemo(
     () =>
-      transportMode === 'loopback'
+      props.connectionBridge ??
+      (transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
             capabilities: [
@@ -1873,14 +2438,24 @@ function ConfiguredApp() {
               ...(import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
                 ? ['presentation-governance.v1' as const]
                 : []),
+              'web-search.v1',
+              'image-search.v1',
+              'image-fetch.v1',
+              'design-document.v1',
+              'enhanced-lease.v1',
             ],
-          }),
-    [transportMode],
+            persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
+          })),
+    [props.connectionBridge, transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
     () => bridge.snapshot(),
     () => bridge.snapshot(),
+  )
+  const designRequest = useMemo(
+    () => ('capabilityFetch' in bridge ? createOfficeDesignRequest(bridge) : undefined),
+    [bridge],
   )
   const [workspace, setWorkspace] = useState<
     { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
@@ -1891,25 +2466,32 @@ function ConfiguredApp() {
     () => officePresentationRolloutPercent(import.meta.env),
     [],
   )
+  const presentationFlags = useMemo(() => officePresentationVerificationFlags(import.meta.env), [])
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
   const [presentationRolloutExcluded, setPresentationRolloutExcluded] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
-  const reconnectEligible = useRef(false)
+  const [pairingForgetError, setPairingForgetError] = useState(false)
+  const [pairingForgetBusy, setPairingForgetBusy] = useState(false)
+  const rawDocumentId = useRef(`document_${crypto.randomUUID().replaceAll('-', '')}`)
 
-  useEffect(() => {
-    if (bridgeState.status === 'connected') {
-      reconnectEligible.current = true
-    } else if (
-      bridgeState.status === 'offline' &&
-      reconnectEligible.current &&
-      host !== 'unknown'
-    ) {
-      reconnectEligible.current = false
-      void bridge.connect(host)
+  const forgetPairing = async () => {
+    if (!('forget' in bridge)) {
+      bridge.disconnect()
+      setPairingForgetError(false)
+      return
     }
-  }, [bridge, bridgeState.status, host])
+    setPairingForgetBusy(true)
+    try {
+      await bridge.forget()
+      setPairingForgetError(false)
+    } catch {
+      setPairingForgetError(true)
+    } finally {
+      setPairingForgetBusy(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -1922,33 +2504,58 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
-            if (
-              activeHost === 'powerpoint' &&
-              !presentationRolloutEnabled(
-                Office.context.document.url || undefined,
-                presentationRolloutPercent,
-              )
-            ) {
-              setPresentationRolloutExcluded(true)
-              setStatus('PPT Agent is not enabled for this presentation yet.')
-              return
-            }
-            const presentationBinding =
-              activeHost === 'powerpoint' ? createBrowserPresentationDocumentBinding() : undefined
-            const boundPresentationDocumentId = presentationBinding
-              ? await presentationBinding.documentId()
-              : undefined
-            const runRecovery =
-              presentationBinding && boundPresentationDocumentId
-                ? await preparePresentationAgentRunRecovery(
-                    presentationBinding,
-                    boundPresentationDocumentId,
-                  )
+            void bridge.connect(activeHost)
+            if (workspaceFactory) created = workspaceFactory({ host: activeHost, document, bridge })
+            else {
+              if (
+                activeHost === 'powerpoint' &&
+                !presentationRolloutEnabled(
+                  Office.context.document.url || undefined,
+                  presentationRolloutPercent,
+                )
+              ) {
+                setPresentationRolloutExcluded(true)
+                setStatus('PPT Agent is not enabled for this presentation yet.')
+                return
+              }
+              const presentationBinding =
+                activeHost === 'powerpoint' ? createBrowserPresentationDocumentBinding() : undefined
+              const boundPresentationDocumentId = presentationBinding
+                ? await presentationBinding.documentId()
                 : undefined
-            const runCheckpoint =
-              presentationBinding && boundPresentationDocumentId
-                ? createPresentationAgentRunCheckpoint(
-                    presentationBinding,
+              const runRecovery =
+                presentationBinding && boundPresentationDocumentId
+                  ? await preparePresentationAgentRunRecovery(
+                      presentationBinding,
+                      boundPresentationDocumentId,
+                    )
+                  : undefined
+              const runCheckpoint =
+                presentationBinding && boundPresentationDocumentId
+                  ? createPresentationAgentRunCheckpoint(
+                      presentationBinding,
+                      boundPresentationDocumentId,
+                      (() => {
+                        try {
+                          return window.localStorage
+                        } catch {
+                          return undefined
+                        }
+                      })(),
+                    )
+                  : undefined
+              const governancePersistence =
+                import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
+                  ? (() => {
+                      try {
+                        return createPresentationGovernanceStorage(window.localStorage)
+                      } catch {
+                        return undefined
+                      }
+                    })()
+                  : undefined
+              const researchDeletePersistence = boundPresentationDocumentId
+                ? createPresentationResearchDeletePersistence(
                     boundPresentationDocumentId,
                     (() => {
                       try {
@@ -1959,256 +2566,280 @@ function ConfiguredApp() {
                     })(),
                   )
                 : undefined
-            const governancePersistence =
-              import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1'
-                ? (() => {
-                    try {
-                      return createPresentationGovernanceStorage(window.localStorage)
-                    } catch {
-                      return undefined
-                    }
-                  })()
+              const researchAbandonPersistence = boundPresentationDocumentId
+                ? createPresentationResearchAbandonPersistence(
+                    boundPresentationDocumentId,
+                    (() => {
+                      try {
+                        return window.localStorage
+                      } catch {
+                        return undefined
+                      }
+                    })(),
+                  )
                 : undefined
-            const researchDeletePersistence = boundPresentationDocumentId
-              ? createPresentationResearchDeletePersistence(
-                  boundPresentationDocumentId,
-                  (() => {
-                    try {
-                      return window.localStorage
-                    } catch {
-                      return undefined
-                    }
-                  })(),
-                )
-              : undefined
-            const researchAbandonPersistence = boundPresentationDocumentId
-              ? createPresentationResearchAbandonPersistence(
-                  boundPresentationDocumentId,
-                  (() => {
-                    try {
-                      return window.localStorage
-                    } catch {
-                      return undefined
-                    }
-                  })(),
-                )
-              : undefined
-            const interruptedRun = runRecovery?.scrubFailed ? undefined : runCheckpoint?.recovery()
-            const environment = officeDiagnosticEnvironment(activeHost)
-            const diagnostics = createOfficeDiagnostics({
-              host: activeHost,
-              platform: environment.platform,
-              build: __WISWORK_OFFICE_BUILD_ID__,
-              localDocumentId: boundPresentationDocumentId,
-              localSessionId: () =>
-                'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined,
-              requirementSets: environment.requirementSets,
-              remoteEnabled: remoteDiagnosticsEnabled,
-              remoteSamplePercent: diagnosticSamplePercent,
-              send: (event) => {
-                if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
-                return bridge.sendDiagnostic(event)
-              },
-            })
-            const runtime = createOfficeHostRuntime(activeHost, {
-              enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
-              enableConversions: capabilityFlags.conversions,
-              enableSkillPackages: capabilityFlags.skillPackages,
-              enableImportMedia: capabilityFlags.importMedia,
-              document,
-              diagnostics,
-              ...(activeHost === 'powerpoint' && 'capabilityFetch' in bridge
-                ? {
-                    presentation: {
-                      ...presentationBinding!,
-                      projectGovernanceEnabled:
-                        import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1',
-                      governanceAvailable: () => {
-                        const current = bridge.snapshot()
-                        return (
-                          current.status === 'connected' &&
-                          current.capabilities?.includes('presentation-governance.v1') === true
-                        )
-                      },
-                      governanceRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch('presentation-governance.v1', body, signal),
-                      governanceSessionId: () =>
-                        'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined,
-                      readGovernanceAttempt: governancePersistence?.read,
-                      writeGovernanceAttempt: governancePersistence?.write,
-                      teamAvailable: () => teamConnection?.available() === true,
-                      teamRequest: teamConnection
-                        ? (body: unknown, signal?: AbortSignal) =>
-                            teamConnection.request(body, signal)
-                        : undefined,
-                      readResearchAbandonAttempt: researchAbandonPersistence?.read,
-                      writeResearchAbandonAttempt: researchAbandonPersistence?.write,
-                      readResearchDeleteAttempt: researchDeletePersistence?.read,
-                      writeResearchDeleteAttempt: researchDeletePersistence?.write,
-                      available: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation.v1') === true
-                        )
-                      },
-                      request: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch('presentation.v1', body, signal),
-                      packageBackupAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-package-backups.v1') ===
-                            true
-                        )
-                      },
-                      packageBackupRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch('presentation-package-backups.v1', body, signal),
-                      masterBackupAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-master-backups.v1') === true
-                        )
-                      },
-                      masterBackupRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch('presentation-master-backups.v1', body, signal),
-                      pdfAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-pdf.v1') === true
-                        )
-                      },
-                      productionPdfAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-production-pdf.v1') === true
-                        )
-                      },
-                      pdfRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch(
-                          (body as { source?: string })?.source === 'production'
-                            ? 'presentation-production-pdf.v1'
-                            : 'presentation-pdf.v1',
-                          body,
+              const interruptedRun = runRecovery?.scrubFailed
+                ? undefined
+                : runCheckpoint?.recovery()
+              const environment = officeDiagnosticEnvironment(activeHost)
+              const diagnostics = createOfficeDiagnostics({
+                host: activeHost,
+                platform: environment.platform,
+                build: __WISWORK_OFFICE_BUILD_ID__,
+                localDocumentId: boundPresentationDocumentId,
+                localSessionId: () =>
+                  'diagnosticSessionId' in bridge ? bridge.diagnosticSessionId() : undefined,
+                requirementSets: environment.requirementSets,
+                remoteEnabled: remoteDiagnosticsEnabled,
+                remoteSamplePercent: diagnosticSamplePercent,
+                send: (event) => {
+                  if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
+                  return bridge.sendDiagnostic(event)
+                },
+              })
+              const runtime = createOfficeHostRuntime(activeHost, {
+                enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+                presentationVerification: presentationFlags,
+                presentationTelemetry: (event) =>
+                  window.dispatchEvent(
+                    new CustomEvent('wiswork:presentation-telemetry', { detail: event }),
+                  ),
+                enableConversions: capabilityFlags.conversions,
+                enableSkillPackages: capabilityFlags.skillPackages,
+                enableImportMedia: capabilityFlags.importMedia,
+                ...('capabilityFetch' in bridge && activeHost === 'powerpoint'
+                  ? {
+                      fetchPowerPointImage: async (url: string, signal?: AbortSignal) => {
+                        const response = await bridge.capabilityFetch(
+                          'image-fetch.v1',
+                          { url },
                           signal,
-                        ),
-                      assetsAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-assets.v1') === true
                         )
+                        if (!response.ok) throw new Error('image_fetch_unavailable')
+                        const payload = (await response.json()) as { data_base64?: unknown }
+                        if (typeof payload.data_base64 !== 'string')
+                          throw new Error('image_fetch_unavailable')
+                        const binary = atob(payload.data_base64)
+                        return Uint8Array.from(binary, (character) => character.charCodeAt(0))
                       },
-                      remoteImagesAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-remote-images.v1') === true
-                        )
-                      },
-                      webpagesAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-webpages.v1') === true
-                        )
-                      },
-                      rightsAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-asset-rights.v1') === true
-                        )
-                      },
-                      animationFrameAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-animation-frame.v1') ===
-                            true
-                        )
-                      },
-                      attachmentsAvailable: () => {
-                        const snapshot = bridge.snapshot()
-                        return (
-                          snapshot.status === 'connected' &&
-                          snapshot.capabilities?.includes('presentation-attachments.v1') === true
-                        )
-                      },
-                      attachmentsRequest: (body: unknown, signal?: AbortSignal) =>
-                        bridge.capabilityFetch(
-                          body &&
-                            typeof body === 'object' &&
-                            'operation' in body &&
-                            body.operation === 'attachment_import_url'
-                            ? 'presentation-remote-images.v1'
-                            : body &&
-                                typeof body === 'object' &&
-                                'operation' in body &&
-                                body.operation === 'attachment_import_webpage'
-                              ? 'presentation-webpages.v1'
+                      powerPointImageFetchAvailable: () =>
+                        bridge.snapshot().capabilities?.includes('image-fetch.v1') === true,
+                    }
+                  : {}),
+                document,
+                diagnostics,
+                ...('capabilityFetch' in bridge && activeHost === 'powerpoint'
+                  ? {
+                      additionalSkills: [
+                        createOfficeWebSkill(bridge, {
+                          advertisedCapabilities: ['web-search.v1', 'image-search.v1'],
+                        }),
+                      ],
+                    }
+                  : {}),
+
+                ...(activeHost === 'powerpoint' && 'capabilityFetch' in bridge
+                  ? {
+                      presentation: {
+                        ...presentationBinding!,
+                        projectGovernanceEnabled:
+                          import.meta.env.VITE_WISWORK_PPT_PROJECT_GOVERNANCE_ENABLED === '1',
+                        governanceAvailable: () => {
+                          const current = bridge.snapshot()
+                          return (
+                            current.status === 'connected' &&
+                            current.capabilities?.includes('presentation-governance.v1') === true
+                          )
+                        },
+                        governanceRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation-governance.v1', body, signal),
+                        governanceSessionId: () =>
+                          'diagnosticSessionId' in bridge
+                            ? bridge.diagnosticSessionId()
+                            : undefined,
+                        readGovernanceAttempt: governancePersistence?.read,
+                        writeGovernanceAttempt: governancePersistence?.write,
+                        teamAvailable: () => teamConnection?.available() === true,
+                        teamRequest: teamConnection
+                          ? (body: unknown, signal?: AbortSignal) =>
+                              teamConnection.request(body, signal)
+                          : undefined,
+                        readResearchAbandonAttempt: researchAbandonPersistence?.read,
+                        writeResearchAbandonAttempt: researchAbandonPersistence?.write,
+                        readResearchDeleteAttempt: researchDeletePersistence?.read,
+                        writeResearchDeleteAttempt: researchDeletePersistence?.write,
+                        available: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation.v1') === true
+                          )
+                        },
+                        request: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation.v1', body, signal),
+                        packageBackupAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-package-backups.v1') ===
+                              true
+                          )
+                        },
+                        packageBackupRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation-package-backups.v1', body, signal),
+                        masterBackupAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-master-backups.v1') ===
+                              true
+                          )
+                        },
+                        masterBackupRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch('presentation-master-backups.v1', body, signal),
+                        pdfAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-pdf.v1') === true
+                          )
+                        },
+                        productionPdfAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-production-pdf.v1') ===
+                              true
+                          )
+                        },
+                        pdfRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch(
+                            (body as { source?: string })?.source === 'production'
+                              ? 'presentation-production-pdf.v1'
+                              : 'presentation-pdf.v1',
+                            body,
+                            signal,
+                          ),
+                        assetsAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-assets.v1') === true
+                          )
+                        },
+                        remoteImagesAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-remote-images.v1') ===
+                              true
+                          )
+                        },
+                        webpagesAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-webpages.v1') === true
+                          )
+                        },
+                        rightsAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-asset-rights.v1') === true
+                          )
+                        },
+                        animationFrameAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-animation-frame.v1') ===
+                              true
+                          )
+                        },
+                        attachmentsAvailable: () => {
+                          const snapshot = bridge.snapshot()
+                          return (
+                            snapshot.status === 'connected' &&
+                            snapshot.capabilities?.includes('presentation-attachments.v1') === true
+                          )
+                        },
+                        attachmentsRequest: (body: unknown, signal?: AbortSignal) =>
+                          bridge.capabilityFetch(
+                            body &&
+                              typeof body === 'object' &&
+                              'operation' in body &&
+                              body.operation === 'attachment_import_url'
+                              ? 'presentation-remote-images.v1'
                               : body &&
                                   typeof body === 'object' &&
                                   'operation' in body &&
-                                  [
-                                    'attachment_attest_license',
-                                    'attachment_revoke_license',
-                                  ].includes(body.operation as string)
-                                ? 'presentation-asset-rights.v1'
+                                  body.operation === 'attachment_import_webpage'
+                                ? 'presentation-webpages.v1'
                                 : body &&
                                     typeof body === 'object' &&
                                     'operation' in body &&
-                                    body.operation === 'attachment_extract_first_frame'
-                                  ? 'presentation-animation-frame.v1'
-                                  : 'presentation-attachments.v1',
-                          body,
-                          signal,
-                        ),
-                    },
-                  }
-                : {}),
-            })
-            const session = createOfficeAgentSession({
-              host: activeHost,
-              transport: createPcBridgeAgentTransport(bridge),
-              skill: runtime.skill,
-              proposals: runtime.proposals,
-              diagnostics,
-              ...(presentationBinding && boundPresentationDocumentId
-                ? {
-                    runCheckpoint: {
-                      interrupted: runRecovery!.interrupted,
-                      scrubFailed: runRecovery!.scrubFailed,
-                      recovery: interruptedRun,
-                      readRecovery: () =>
-                        runRecovery!.scrubFailed ? undefined : runCheckpoint!.recovery(),
-                      validateDocument: async () =>
-                        (await presentationBinding.documentId()) === boundPresentationDocumentId,
-                      begin: runCheckpoint!.begin,
-                      tool: runCheckpoint!.tool,
-                      conversation: runCheckpoint!.conversation,
-                      adopt: runCheckpoint!.adopt,
-                      finish: runCheckpoint!.finish,
-                    },
-                  }
-                : {}),
-            })
-            teamRuntime.current = runtime
-            created = {
-              runtime,
-              session,
-              ui: createOfficeWorkspaceUi(
-                runtime,
+                                    [
+                                      'attachment_attest_license',
+                                      'attachment_revoke_license',
+                                    ].includes(body.operation as string)
+                                  ? 'presentation-asset-rights.v1'
+                                  : body &&
+                                      typeof body === 'object' &&
+                                      'operation' in body &&
+                                      body.operation === 'attachment_extract_first_frame'
+                                    ? 'presentation-animation-frame.v1'
+                                    : 'presentation-attachments.v1',
+                            body,
+                            signal,
+                          ),
+                      },
+                    }
+                  : {}),
+              })
+              const session = createOfficeAgentSession({
+                host: activeHost,
+                transport: createPcBridgeAgentTransport(bridge),
+                skill: runtime.skill,
+                proposals: runtime.proposals,
+                automaticPowerPointMutations: activeHost === 'powerpoint',
+                ...('setToolHandler' in bridge ? { remoteTools: bridge } : {}),
+                presentationText: (key) =>
+                  officePresentationText(globalThis.Office?.context?.displayLanguage, key),
                 diagnostics,
-                undefined,
-                interruptedRun?.changeReceipt && interruptedRun.toolCallId
-                  ? { agentRunId: interruptedRun.runId, toolCallId: interruptedRun.toolCallId }
-                  : undefined,
-                teamConnection,
-              ),
+                ...(presentationBinding && boundPresentationDocumentId
+                  ? {
+                      runCheckpoint: {
+                        interrupted: runRecovery!.interrupted,
+                        scrubFailed: runRecovery!.scrubFailed,
+                        recovery: interruptedRun,
+                        readRecovery: () =>
+                          runRecovery!.scrubFailed ? undefined : runCheckpoint!.recovery(),
+                        validateDocument: async () =>
+                          (await presentationBinding.documentId()) === boundPresentationDocumentId,
+                        begin: runCheckpoint!.begin,
+                        tool: runCheckpoint!.tool,
+                        conversation: runCheckpoint!.conversation,
+                        adopt: runCheckpoint!.adopt,
+                        finish: runCheckpoint!.finish,
+                      },
+                    }
+                  : {}),
+              })
+              teamRuntime.current = runtime
+              created = {
+                runtime,
+                session,
+                ui: createOfficeWorkspaceUi(
+                  runtime,
+                  diagnostics,
+                  undefined,
+                  interruptedRun?.changeReceipt && interruptedRun.toolCallId
+                    ? { agentRunId: interruptedRun.runId, toolCallId: interruptedRun.toolCallId }
+                    : undefined,
+                  teamConnection,
+                ),
+              }
             }
             setWorkspace(created)
           }
@@ -2239,10 +2870,12 @@ function ConfiguredApp() {
     presentationRolloutPercent,
     remoteDiagnosticsEnabled,
     teamConnection,
+    presentationFlags,
+    workspaceFactory,
   ])
 
   useEffect(() => {
-    if (bridgeState.status !== 'connected' && workspace) {
+    if (shouldResetOfficeSession(bridgeState.status) && workspace) {
       workspace.session.authenticationLost()
       workspace.runtime.clearSession()
       workspace.runtime.presentation?.prepareReconnect()
@@ -2254,6 +2887,49 @@ function ConfiguredApp() {
   useEffect(() => {
     workspace?.runtime.governance?.clear()
   }, [workspace, governanceSessionId])
+  useEffect(() => {
+    workspace?.runtime.setPowerPointImageFetchAvailable?.(
+      bridgeState.status === 'connected' &&
+        'capabilities' in bridgeState &&
+        bridgeState.capabilities?.includes('image-fetch.v1') === true,
+    )
+  }, [bridgeState, workspace])
+
+  useEffect(() => {
+    const enhanced = bridgeState.enhanced
+    if (!workspace || host === 'unknown') return
+    if (bridgeState.status !== 'connected' || !enhanced?.raw_office) {
+      workspace.runtime.disableElevatedOffice?.()
+      return
+    }
+    workspace.runtime.enableElevatedOffice?.(
+      () => {
+        const snapshot = bridge.snapshot()
+        const current = snapshot.enhanced
+        const raw = current ? rawOfficeCapabilities(current) : { rawJs: false, rawOoxml: false }
+        const valid =
+          snapshot.status === 'connected' &&
+          current?.raw_office === true &&
+          current.host === `office-${host}` &&
+          current.expires_at > Date.now()
+        return {
+          activeMode: valid ? ('enhanced' as const) : ('standard' as const),
+          signedIn: valid,
+          paired: valid,
+          hostEnabled: valid,
+          rawOfficeEnabled: valid,
+          rawOfficeJsEnabled: valid && raw.rawJs,
+          rawOfficeOoxmlEnabled: valid && raw.rawOoxml,
+          documentId: rawDocumentId.current,
+          sessionId: current?.runtime_instance ?? 'revoked_session_0000',
+          generation: current?.session_generation ?? -1,
+          revision: `revision_${String(current?.session_generation ?? 0).padStart(8, '0')}`,
+        }
+      },
+      translateRawOfficeConfirmation(normalizeLang(globalThis.Office?.context?.displayLanguage)),
+    )
+  }, [bridge, bridgeState.enhanced, bridgeState.status, host, workspace])
+
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (presentationRolloutExcluded)
     return <StatusScreen title="PPT Agent unavailable" detail={status} />
@@ -2262,34 +2938,33 @@ function ConfiguredApp() {
       <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
     )
   }
-  if (bridgeState.status !== 'connected') {
-    const detail = {
-      offline: 'Connect again to create a new secure pairing with WisWork PC.',
-      connecting: 'Connecting securely to the WisWork Office Relay…',
-      incompatible:
-        'Upgrade Office Relay to a version that supports this Office add-in, then try again.',
-      pc_incompatible:
-        'This WisWork PC version cannot connect to the current Office add-in. Upgrade WisWork PC, then connect again.',
-      signed_out: 'Sign in to WisWork PC first.',
-      pending: bridgeState.verificationCode
-        ? `Enter code ${bridgeState.verificationCode} in WisWork PC, then approve the matching request.`
-        : 'Enter the pairing code in WisWork PC.',
-      waiting_for_pc: bridgeState.verificationCode
-        ? `Enter code ${bridgeState.verificationCode} in WisWork PC to continue.`
-        : 'Waiting for a signed-in WisWork PC.',
-      rejected: 'The connection was rejected in WisWork PC.',
-      expired:
-        'The connection request expired. Check that WisWork PC is signed in and up to date, then connect again. If the PC showed a protocol error, upgrade WisWork PC before retrying.',
-    }[bridgeState.status]
+  if (pairingForgetError || shouldShowRelayStatusScreen(bridgeState.status, Boolean(workspace))) {
+    if (pairingForgetError) {
+      return (
+        <StatusScreen
+          title="Couldn’t forget this Office pairing"
+          detail="This taskpane is disconnected, but its saved pairing could not be removed. Try again before reconnecting."
+          busy={pairingForgetBusy}
+        >
+          <button type="button" disabled={pairingForgetBusy} onClick={() => void forgetPairing()}>
+            {pairingForgetBusy ? 'Forgetting pairing…' : 'Try forgetting again'}
+          </button>
+        </StatusScreen>
+      )
+    }
+    const presentation = relayConnectionPresentation(
+      bridgeState.status,
+      bridgeState.verificationCode,
+    )
     return (
       <StatusScreen
-        title="Connect to WisWork PC"
-        detail={detail}
-        busy={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
+        title={presentation.title}
+        detail={presentation.detail}
+        busy={presentation.busy}
       >
         <button
           type="button"
-          disabled={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
+          disabled={presentation.actionDisabled}
           onClick={() => {
             void bridge.connect(host)
           }}
@@ -2312,19 +2987,34 @@ function ConfiguredApp() {
   if (!workspace)
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
   const disconnect = () => {
-    reconnectEligible.current = false
     void teamConnection?.signOut()
     workspace.session.logout()
-    workspace.runtime.dispose()
-    bridge.disconnect()
+    workspace.runtime.disableElevatedOffice()
+    workspace.runtime.clearSession()
+    void forgetPairing()
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
+  const connectionNotice =
+    bridgeState.status !== 'connected'
+      ? relayConnectionPresentation(bridgeState.status, bridgeState.verificationCode).detail
+      : 'remembered' in bridgeState
+        ? relayPersistenceNotice(bridgeState as OfficeRelaySnapshot)
+        : undefined
   return (
     <WorkspaceComponent
       session={workspace.session}
       ui={workspace.ui}
       disconnect={disconnect}
       host={host}
+      connectionNotice={connectionNotice}
+      runtimeMode={officeRuntimeModeForTaskpane(host, bridgeState)}
+      connectionAvailable={bridgeState.status === 'connected'}
+      designRequest={
+        'capabilities' in bridgeState && bridgeState.capabilities?.includes('design-document.v1')
+          ? designRequest
+          : undefined
+      }
+      repairDesignConnection={() => forgetPairing()}
     />
   )
 }

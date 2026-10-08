@@ -48,8 +48,8 @@ describe('configured Office build output', () => {
   })
   it('emits only configured origins in the deployment manifest', async () => {
     const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
-    expect(manifest).toContain('<Version>0.3.3.0</Version>')
-    expect(manifest).toContain('https://office.example/taskpane.html?v=0.3.3')
+    expect(manifest).toContain('<Version>0.3.42.0</Version>')
+    expect(manifest).toContain('https://office.example/taskpane.html?v=0.3.42')
     expect(manifest).not.toContain('auth.example')
     expect(manifest).not.toContain('localhost')
     expect(manifest).not.toContain('*')
@@ -76,7 +76,15 @@ describe('configured Office build output', () => {
     expect(taskpane).not.toMatch(/oauth|callback|auth\.dev|wisusage/i)
     expect(taskpane).not.toContain("'unsafe-eval'")
     expect(files).not.toContain('oauth')
-    expect(files.some((file) => file.startsWith('assets/conversion-worker-'))).toBe(true)
+    const conversionWorker = files.find((file) => file.startsWith('assets/conversion-worker-'))
+    const pdfWorker = files.find(
+      (file) => file.startsWith('assets/pdf.worker-') && file.endsWith('.js'),
+    )
+    expect(conversionWorker).toBeDefined()
+    expect(pdfWorker).toBeDefined()
+    expect(await readFile(resolve(dist, conversionWorker!), 'utf8')).toContain(
+      `./${pdfWorker!.replace(/^assets\//, '')}`,
+    )
     expect(files.some((file) => file.endsWith('.map'))).toBe(false)
   })
 
@@ -98,6 +106,20 @@ describe('configured Office build output', () => {
       }
     }
     await expect(access(resolve(dist, 'manifest.xml'))).rejects.toThrow()
+  }, 30_000)
+
+  it('fails the build for an invalid persistent-pairing rollback flag', async () => {
+    const key = 'VITE_WISWORK_OFFICE_PAIRING_RESUME'
+    const prior = process.env[key]
+    process.env[key] = 'false'
+    try {
+      await expect(
+        build({ configFile: resolve(appRoot, 'vite.config.ts'), logLevel: 'silent' }),
+      ).rejects.toThrow('invalid_office_pairing_resume')
+    } finally {
+      if (prior === undefined) delete process.env[key]
+      else process.env[key] = prior
+    }
   }, 15_000)
 
   it('can build the retained legacy workspace with only its independent rollback flag', async () => {
@@ -123,5 +145,5 @@ describe('configured Office build output', () => {
         else process.env[key] = value
       }
     }
-  }, 15_000)
+  }, 30_000)
 })

@@ -1,12 +1,15 @@
+import type { ReactNode } from 'react'
 import { acpPresentationStageLabel } from '@wiswork/agent-harness'
 import type { PresentationStageGroup } from './presentation-stage-timeline.js'
 
 export function PresentationStageCard({
   group,
   runActive = true,
+  children,
 }: {
   group: PresentationStageGroup
   runActive?: boolean
+  children?: ReactNode
 }) {
   const label = acpPresentationStageLabel(group.stage)
   return (
@@ -34,20 +37,22 @@ export function PresentationStageCard({
       ) : null}
       <details>
         <summary>内部操作 · {group.events.length} 项</summary>
-        <ul>
-          {group.events.map((event) => (
-            <li key={event.id}>
-              <code>{event.name}</code> ·{' '}
-              {event.state === 'running'
-                ? runActive
-                  ? '进行中'
-                  : '待核对'
-                : event.state === 'error'
-                  ? '未完成'
-                  : '已结束'}
-            </li>
-          ))}
-        </ul>
+        {children ?? (
+          <ul>
+            {group.events.map((event) => (
+              <li key={event.id}>
+                <code>{event.name}</code> ·{' '}
+                {event.state === 'running'
+                  ? runActive
+                    ? '进行中'
+                    : '待核对'
+                  : event.state === 'error'
+                    ? '未完成'
+                    : '已结束'}
+              </li>
+            ))}
+          </ul>
+        )}
       </details>
     </article>
   )

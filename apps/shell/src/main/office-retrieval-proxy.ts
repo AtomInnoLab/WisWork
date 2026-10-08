@@ -1,8 +1,15 @@
+import { imageSearch, wisUsageWebSearch } from '@wiswork/ai-search'
+import type { LookupAddress } from 'node:dns'
+import { lookup } from 'node:dns/promises'
+import { request as httpsRequest } from 'node:https'
+import type { LookupFunction, TcpNetConnectOpts } from 'node:net'
+import { MAX_OFFICE_IMAGE_SOURCE_BYTES } from './office-image-handoff'
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
 const MAX_RESULTS = 20
 const REQUEST_TIMEOUT_MS = 15_000
+const OFFICE_IMAGE_FETCH_ENDPOINT = 'https://office.8-216-134-194.sslip.io/office-image-fetch'
 // Intentionally empty until the service owner publishes both the canonical URL and this contract.
 // The service—not this client—must resolve DNS safely on every connection, reject DNS rebinding,
 // and validate every redirect hop before fetching. Runtime configuration cannot widen this map.
@@ -14,12 +21,483 @@ export const OFFICE_RETRIEVAL_SERVICES: Readonly<
   Record<string, OfficeRetrievalServiceAttestation>
 > = {}
 
-export type OfficeWebCapability = 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
-export type OfficeRetrievalProxy = (
-  capability: string,
-  body: unknown,
+export type OfficeWebCapability =
+  'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'image-fetch.v1'
+export interface OfficeRetrievalProxy {
+  (capability: string, body: unknown, signal?: AbortSignal): Promise<Uint8Array>
+  clear?(): void
+}
+
+export interface DownloadedImage {
+  mime: 'image/png' | 'image/jpeg'
+  bytes: Uint8Array
+}
+
+function supportedImageMime(value: unknown): value is DownloadedImage['mime'] {
+  return value === 'image/png' || value === 'image/jpeg'
+}
+
+function boundedImageDimension(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 100_000
+    ? Number(value)
+    : undefined
+}
+
+export async function collectBoundedImageBytes(
+  chunks: AsyncIterable<Uint8Array>,
+  maximum = 2 * 1024 * 1024,
+): Promise<Uint8Array> {
+  const collected: Uint8Array[] = []
+  let total = 0
+  for await (const chunk of chunks) {
+    total += chunk.byteLength
+    if (total > maximum) throw new Error('image_limit')
+    collected.push(chunk)
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of collected) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
+async function* responseChunks(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader()
+  let complete = false
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) {
+        complete = true
+        return
+      }
+      yield next.value
+    }
+  } finally {
+    if (!complete) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}
+
+export function createPinnedLookup(
+  selected: LookupAddress | readonly LookupAddress[],
+): LookupFunction {
+  const addresses = ('address' in selected ? [selected] : selected).map(({ address, family }) => ({
+    address,
+    family,
+  }))
+  const first = addresses[0]
+  if (!first) throw new Error('retrieval_upstream_error')
+  return ((_hostname, options, callback) => {
+    if (typeof options === 'object' && options.all) callback(null, addresses)
+    else callback(null, first.address, first.family)
+  }) as LookupFunction
+}
+
+type LookupAddresses = (hostname: string) => Promise<readonly LookupAddress[]>
+
+export function resolvePublicImageRedirect(
+  currentUrl: string,
+  location: string | undefined,
+  redirectsRemaining: number,
+): string {
+  if (!location || redirectsRemaining < 1) throw new Error('retrieval_upstream_error')
+  try {
+    return safeHttpsUrl(new URL(location, currentUrl).href)
+  } catch (error) {
+    throw new Error('retrieval_upstream_error', { cause: error })
+  }
+}
+
+async function downloadPublicImage(
+  url: string,
   signal?: AbortSignal,
-) => Promise<Uint8Array>
+  lookupAddresses: LookupAddresses = (hostname) => lookup(hostname, { all: true, verbatim: true }),
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  redirectsRemaining = 3,
+  maximumBytes = 2 * 1024 * 1024,
+): Promise<DownloadedImage> {
+  const startedAt = Date.now()
+  const parsed = new URL(url)
+  if (signal?.aborted) throw new Error('retrieval_upstream_error')
+  let lookupTimer: ReturnType<typeof setTimeout> | undefined
+  let abortLookup: (() => void) | undefined
+  const addresses = await Promise.race([
+    lookupAddresses(parsed.hostname),
+    new Promise<never>((_resolve, reject) => {
+      lookupTimer = setTimeout(() => reject(new Error('retrieval_upstream_error')), timeoutMs)
+    }),
+    new Promise<never>((_resolve, reject) => {
+      abortLookup = () => reject(new Error('retrieval_upstream_error'))
+      signal?.addEventListener('abort', abortLookup, { once: true })
+    }),
+  ]).finally(() => {
+    clearTimeout(lookupTimer)
+    if (abortLookup) signal?.removeEventListener('abort', abortLookup)
+  })
+  if (signal?.aborted) throw new Error('retrieval_upstream_error')
+  if (!addresses.length || addresses.some((entry) => unsafeIpLiteral(entry.address)))
+    throw new Error('retrieval_upstream_error')
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (
+      code:
+        | 'retrieval_upstream_error'
+        | 'image_mime_unsupported'
+        | 'image_limit' = 'retrieval_upstream_error',
+    ) => {
+      if (settled) return
+      settled = true
+      reject(new Error(code))
+    }
+    // HTTPS forwards socket options that its RequestOptions type does not declare.
+    const connectionOptions: Pick<TcpNetConnectOpts, 'autoSelectFamily'> = {
+      autoSelectFamily: true,
+    }
+    const request = httpsRequest(
+      parsed,
+      {
+        method: 'GET',
+        agent: false,
+        lookup: createPinnedLookup(addresses),
+        ...connectionOptions,
+        headers: {
+          Accept: 'image/png,image/jpeg',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+        },
+      },
+      (response) => {
+        if (
+          response.statusCode !== undefined &&
+          response.statusCode >= 300 &&
+          response.statusCode < 400
+        ) {
+          let next: string
+          try {
+            next = resolvePublicImageRedirect(
+              parsed.href,
+              response.headers.location,
+              redirectsRemaining,
+            )
+          } catch {
+            response.destroy()
+            fail()
+            return
+          }
+          if (settled) return
+          settled = true
+          response.destroy()
+          resolve(
+            downloadPublicImage(
+              next,
+              signal,
+              lookupAddresses,
+              timeoutMs,
+              redirectsRemaining - 1,
+              maximumBytes,
+            ),
+          )
+          return
+        }
+        const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+        const declared = Number(response.headers['content-length'] ?? 0)
+        if (response.statusCode !== 200) {
+          response.destroy()
+          fail()
+          return
+        }
+        if (declared > maximumBytes) {
+          response.destroy()
+          fail('image_limit')
+          return
+        }
+        if (!supportedImageMime(mime)) {
+          response.destroy()
+          fail('image_mime_unsupported')
+          return
+        }
+        void collectBoundedImageBytes(response, maximumBytes)
+          .then((bytes) => {
+            if (settled) return
+            settled = true
+            resolve({ mime, bytes })
+          })
+          .catch((error) => {
+            response.destroy()
+            fail(
+              error instanceof Error && error.message === 'image_limit'
+                ? 'image_limit'
+                : 'retrieval_upstream_error',
+            )
+          })
+      },
+    )
+    request.once('error', () => fail())
+    const timeout = setTimeout(
+      () => request.destroy(new Error('retrieval_upstream_error')),
+      Math.max(1, timeoutMs - (Date.now() - startedAt)),
+    )
+    const abort = () => request.destroy(new Error('retrieval_upstream_error'))
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+    request.once('close', () => {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
+    })
+    request.end()
+  })
+}
+
+export function createOfficeRemoteImageDownloader(options: {
+  fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
+  fetch?: typeof fetch
+  timeoutMs?: number
+}): (url: string, signal?: AbortSignal) => Promise<DownloadedImage> {
+  const doFetch = options.fetch ?? fetch
+  return async (url, signal) => {
+    const controller = new AbortController()
+    const cancel = () => controller.abort()
+    let rejectDeadline: ((reason: Error) => void) | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject
+    })
+    signal?.addEventListener('abort', cancel, { once: true })
+    controller.signal.addEventListener(
+      'abort',
+      () => rejectDeadline?.(new Error('image_fetch_unavailable')),
+      { once: true },
+    )
+    const timer = setTimeout(cancel, options.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    try {
+      const response = await Promise.race([
+        options.fetchWithAuth((accessToken) =>
+          doFetch(OFFICE_IMAGE_FETCH_ENDPOINT, {
+            method: 'POST',
+            redirect: 'error',
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ url: safeHttpsUrl(url) }),
+            signal: controller.signal,
+          }),
+        ),
+        deadline,
+      ])
+      if (response.status === 413) throw new Error('image_limit')
+      if (response.status === 415) throw new Error('image_mime_unsupported')
+      if (response.status !== 200 || response.redirected) throw new Error('image_fetch_unavailable')
+      const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+      if (!supportedImageMime(mime)) throw new Error('image_mime_unsupported')
+      if (Number(response.headers.get('content-length') ?? 0) > MAX_OFFICE_IMAGE_SOURCE_BYTES)
+        throw new Error('image_limit')
+      if (!response.body) throw new Error('image_fetch_unavailable')
+      return {
+        mime,
+        bytes: await collectBoundedImageBytes(
+          responseChunks(response.body),
+          MAX_OFFICE_IMAGE_SOURCE_BYTES,
+        ),
+      }
+    } catch (error) {
+      if (signal?.aborted) throw new Error('search_cancelled', { cause: error })
+      if (
+        error instanceof Error &&
+        (error.message === 'image_limit' || error.message === 'image_mime_unsupported')
+      )
+        throw error
+      throw new Error('image_fetch_unavailable', { cause: error })
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
+    }
+  }
+}
+
+export function createOfficeLocalSearchProxy(options: {
+  fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
+  webSearch?: typeof wisUsageWebSearch
+  searchImages?: typeof imageSearch
+  downloadImage?: (url: string, signal?: AbortSignal) => Promise<DownloadedImage>
+  remoteDownloadImage?: (url: string, signal?: AbortSignal) => Promise<DownloadedImage>
+  normalizeImage?: (image: DownloadedImage) => Promise<DownloadedImage>
+  lookupAddresses?: LookupAddresses
+  imageTimeoutMs?: number
+}): OfficeRetrievalProxy {
+  const searchWeb = options.webSearch ?? wisUsageWebSearch
+  const searchImages = options.searchImages ?? imageSearch
+  // Only a local normalizer may consume a larger source. Never send it over Relay.
+  const maximumSourceBytes = options.normalizeImage
+    ? MAX_OFFICE_IMAGE_SOURCE_BYTES
+    : 2 * 1024 * 1024
+  const downloadImage =
+    options.downloadImage ??
+    ((url: string, signal?: AbortSignal) =>
+      downloadPublicImage(
+        url,
+        signal,
+        options.lookupAddresses,
+        options.imageTimeoutMs,
+        3,
+        maximumSourceBytes,
+      ))
+  const semanticImageError = (error: unknown) =>
+    error instanceof Error &&
+    (error.message === 'image_limit' ||
+      error.message === 'image_mime_unsupported' ||
+      error.message === 'search_cancelled')
+  const allowedImages = new Map<
+    string,
+    { expiresAt: number; query: string; maxResults: number; fallbackImageUrl?: string }
+  >()
+  let generation = 0
+  const proxy: OfficeRetrievalProxy = async (capability, body, signal) => {
+    const requestGeneration = generation
+    const checkCurrent = () => {
+      if (signal?.aborted || requestGeneration !== generation) throw new Error('search_cancelled')
+    }
+    const request = requestFor(capability, body)
+    checkCurrent()
+    if (request.operation === 'web-search') {
+      const input = request.input as { query: string; max_results: number }
+      const result = await searchWeb(input.query, Math.min(input.max_results, 10), {
+        fetchWithAuth: options.fetchWithAuth,
+        signal,
+      })
+      checkCurrent()
+      return new TextEncoder().encode(JSON.stringify({ results: result.results }))
+    }
+    if (request.operation === 'image-search') {
+      const input = request.input as { query: string; max_results: number }
+      const result = await searchImages(input.query, input.max_results)
+      checkCurrent()
+      const expiresAt = Date.now() + 15 * 60_000
+      for (const image of result.images)
+        allowedImages.set(image.imageUrl, {
+          expiresAt,
+          query: input.query,
+          maxResults: input.max_results,
+          ...(image.fallbackImageUrl
+            ? { fallbackImageUrl: safeHttpsUrl(image.fallbackImageUrl) }
+            : {}),
+        })
+      while (allowedImages.size > 100) allowedImages.delete(allowedImages.keys().next().value!)
+      return new TextEncoder().encode(
+        JSON.stringify({
+          images: result.images.map((image) => {
+            const width = boundedImageDimension(image.width)
+            const height = boundedImageDimension(image.height)
+            return {
+              title: image.title,
+              image_url: safeHttpsUrl(image.imageUrl),
+              source_url: safeHttpsUrl(new URL(image.sourceUrl).href),
+              source: image.source,
+              ...(width === undefined ? {} : { width }),
+              ...(height === undefined ? {} : { height }),
+            }
+          }),
+        }),
+      )
+    }
+    if (request.operation === 'image-fetch') {
+      const url = (request.input as { url: string }).url
+      const source = allowedImages.get(url)
+      if (!source) throw new Error('retrieval_invalid_request')
+      if (source.expiresAt < Date.now()) {
+        // Re-run the original search; an expired candidate is not permission to
+        // fetch a stale/arbitrary URL. Keep the same bounded 100-candidate ledger.
+        const result = await searchImages(source.query, source.maxResults)
+        checkCurrent()
+        const renewed = result.images.find((image) => image.imageUrl === url)
+        if (!renewed) throw new Error('retrieval_invalid_request')
+        if (renewed.fallbackImageUrl)
+          source.fallbackImageUrl = safeHttpsUrl(renewed.fallbackImageUrl)
+        else delete source.fallbackImageUrl
+        source.expiresAt = Date.now() + 15 * 60_000
+      }
+      const deadline = options.remoteDownloadImage ? new AbortController() : undefined
+      const cancelDeadline = () => deadline?.abort()
+      signal?.addEventListener('abort', cancelDeadline, { once: true })
+      const deadlineTimer = deadline
+        ? setTimeout(cancelDeadline, options.imageTimeoutMs ?? REQUEST_TIMEOUT_MS)
+        : undefined
+      const candidateSignal = deadline?.signal ?? signal
+      const fetchCandidate = async (candidateUrl: string) => {
+        if (!options.remoteDownloadImage) return downloadImage(candidateUrl, candidateSignal)
+        try {
+          return await options.remoteDownloadImage(candidateUrl, candidateSignal)
+        } catch (error) {
+          if (signal?.aborted) throw error
+          if (deadline?.signal.aborted)
+            throw new Error('retrieval_upstream_error', { cause: error })
+          if (semanticImageError(error)) throw error
+          if (!(error instanceof Error) || error.message !== 'image_fetch_unavailable') throw error
+          return downloadImage(candidateUrl, candidateSignal)
+        }
+      }
+      const normalizeCandidate = async (candidateUrl: string) => {
+        const downloaded = await fetchCandidate(candidateUrl)
+        checkCurrent()
+        if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')
+        if (downloaded.bytes.byteLength > maximumSourceBytes) throw new Error('image_limit')
+        // Decoding is part of selecting a usable candidate, not a later transport step.
+        const prepared = options.normalizeImage
+          ? await options.normalizeImage(downloaded)
+          : downloaded
+        checkCurrent()
+        if (candidateSignal?.aborted) throw new Error('retrieval_upstream_error')
+        if (!supportedImageMime(prepared.mime)) throw new Error('image_mime_unsupported')
+        if (prepared.bytes.byteLength > 2 * 1024 * 1024) throw new Error('retrieval_upstream_error')
+        return prepared
+      }
+      const prepareCandidate = async (candidateUrl: string) => {
+        if (!candidateSignal) return normalizeCandidate(candidateUrl)
+        if (candidateSignal.aborted)
+          throw new Error(signal?.aborted ? 'search_cancelled' : 'retrieval_upstream_error')
+        let abort: (() => void) | undefined
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          abort = () =>
+            reject(new Error(signal?.aborted ? 'search_cancelled' : 'retrieval_upstream_error'))
+          candidateSignal.addEventListener('abort', abort, { once: true })
+          if (candidateSignal.aborted) abort()
+        })
+        try {
+          return await Promise.race([normalizeCandidate(candidateUrl), cancelled])
+        } finally {
+          if (abort) candidateSignal.removeEventListener('abort', abort)
+        }
+      }
+      let downloaded: DownloadedImage
+      try {
+        downloaded = await prepareCandidate(url)
+      } catch (error) {
+        if (signal?.aborted || (error instanceof Error && error.message === 'search_cancelled'))
+          throw error
+        if (deadline?.signal.aborted) throw new Error('retrieval_upstream_error', { cause: error })
+        checkCurrent()
+        if (!source.fallbackImageUrl) throw error
+        downloaded = await prepareCandidate(source.fallbackImageUrl)
+      } finally {
+        clearTimeout(deadlineTimer)
+        signal?.removeEventListener('abort', cancelDeadline)
+      }
+      checkCurrent()
+      const { mime, bytes } = downloaded
+      return new TextEncoder().encode(
+        JSON.stringify({ mime, data_base64: Buffer.from(bytes).toString('base64') }),
+      )
+    }
+    throw new Error('retrieval_capability_unavailable')
+  }
+  proxy.clear = () => {
+    generation += 1
+    allowedImages.clear()
+  }
+  return proxy
+}
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -159,6 +637,10 @@ function requestFor(capability: string, input: unknown) {
   if (capability === 'web-fetch.v1') {
     exact(body, ['url'])
     return { version: 1, operation: 'web-fetch', input: { url: safeHttpsUrl(body.url) } }
+  }
+  if (capability === 'image-fetch.v1') {
+    exact(body, ['url'])
+    return { version: 1, operation: 'image-fetch', input: { url: safeHttpsUrl(body.url) } }
   }
   throw new Error('retrieval_invalid_request')
 }

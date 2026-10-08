@@ -1787,7 +1787,13 @@ function Ribbon({
             symbol="ƒ"
             onClick={() => onCommand('toggle-show-formulas')}
           />
-          <RibbonReserved large menu label={t('appErrorChecking')} symbol="⚠" />
+          <RibbonButton
+            large
+            label={t('appErrorChecking')}
+            detail={t('appErrorChecking')}
+            symbol="⚠"
+            onClick={() => onCommand('error-checking')}
+          />
           <RibbonReserved large label={t('appWatchWindow')} symbol="👓" />
         </RibbonGroup>
         <RibbonGroup label={t('appGroupCalculation')}>

@@ -1,16 +1,29 @@
 import type { ImageGeometry, PowerPointImageAdapter } from './powerpoint-import-media.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
+import { readUntilConverged } from '../shared/office-write-transaction.js'
 
 type Runtime = Record<string, any>
 function cancelled(signal?: AbortSignal) {
   if (signal?.aborted) throw new Error('cancelled')
+}
+function officeAsyncError(value: unknown): Error {
+  const source = value && typeof value === 'object' ? (value as Runtime) : {}
+  return Object.assign(new Error('office_write_failed'), {
+    ...(typeof source.code === 'string' ? { code: source.code } : {}),
+    ...(typeof source.name === 'string' ? { name: source.name } : {}),
+    ...(source.debugInfo && typeof source.debugInfo === 'object'
+      ? { debugInfo: source.debugInfo }
+      : {}),
+  })
 }
 function runtime(): Runtime {
   const root = globalThis as Runtime
   const requirements = root.Office?.context?.requirements
   if (
     root.Office?.context?.host !== 'PowerPoint' ||
-    !requirements?.isSetSupported?.('PowerPointApi', '1.8') ||
+    !requirements?.isSetSupported?.('PowerPointApi', '1.5') ||
+    !requirements?.isSetSupported?.('ImageCoercion', '1.1') ||
+    typeof root.Office?.context?.document?.setSelectedDataAsync !== 'function' ||
     typeof root.PowerPoint?.run !== 'function'
   )
     throw new Error('office_api_unsupported')
@@ -47,40 +60,58 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
     geometry: ImageGeometry,
     signal?: AbortSignal,
   ): Promise<{ id: string }> {
-    return runtime().run(async (context: Runtime) => {
+    const powerpoint = runtime()
+    const before = await powerpoint.run(async (context: Runtime) => {
       const item = await slide(context, index, signal)
-      if (typeof item.shapes?.addImage !== 'function') throw new Error('office_api_unsupported')
+      if (typeof context.presentation?.setSelectedSlides !== 'function')
+        throw new Error('office_api_unsupported')
       item.shapes.load('items/id')
       await sync(context, signal)
-      const beforeIds = new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
-      cancelled(signal)
-      let created: Runtime | undefined
-      try {
-        created = item.shapes.addImage(base64, geometry)
-        if (typeof created?.delete !== 'function') throw new Error('office_api_unsupported')
-        created.load('id')
-        await sync(context, signal)
-        if (!created.id) throw new Error('office_write_failed')
-        return { id: String(created.id) }
-      } catch (writeError) {
-        try {
-          if (created) {
-            created.delete()
-            await sync(context)
-          }
-          item.shapes.load('items/id')
-          await sync(context)
-          const recovered = new Set(
-            (item.shapes.items as Runtime[]).map((shape) => String(shape.id)),
-          )
-          if (recovered.size !== beforeIds.size || [...recovered].some((id) => !beforeIds.has(id)))
-            throw new Error('office_recovery_failed', { cause: writeError })
-        } catch (recoveryError) {
-          throw new Error('office_recovery_failed', { cause: recoveryError })
-        }
-        throw new Error('office_write_failed', { cause: writeError })
-      }
+      context.presentation.setSelectedSlides([String(item.id)])
+      await sync(context, signal)
+      return new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
     })
+    cancelled(signal)
+    const root = globalThis as Runtime
+    await new Promise<void>((resolve, reject) => {
+      root.Office.context.document.setSelectedDataAsync(
+        base64,
+        {
+          coercionType: root.Office.CoercionType.Image,
+          imageLeft: geometry.left,
+          imageTop: geometry.top,
+          imageWidth: geometry.width,
+          imageHeight: geometry.height,
+        },
+        (result: Runtime) => {
+          if (result?.error || String(result?.status).toLowerCase() === 'failed')
+            reject(officeAsyncError(result?.error))
+          else resolve()
+        },
+      )
+    })
+    cancelled(signal)
+    const id = await readUntilConverged<string>({
+      signal,
+      attempts: 6,
+      delayMs: 100,
+      read: () =>
+        powerpoint.run(async (context: Runtime) => {
+          const item = await slide(context, index, signal)
+          item.shapes.load('items/id')
+          await sync(context, signal)
+          const created = (item.shapes.items as Runtime[]).find(
+            (shape) => !before.has(String(shape.id)),
+          )
+          if (!created?.id) return ''
+          created.name = 'WisWork picture'
+          await sync(context, signal)
+          return String(created.id)
+        }),
+      accept: Boolean,
+    })
+    if (!id) throw new Error('office_write_failed')
+    return { id }
   }
   async verifyImage(
     index: number,
@@ -88,20 +119,29 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
     geometry: ImageGeometry,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    return runtime().run(async (context: Runtime) => {
-      const item = await slide(context, index, signal)
-      if (typeof item.shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
-      const shape = item.shapes.getItem(id)
-      shape.load('id,left,top,width,height,type')
-      await sync(context, signal)
-      return (
-        String(shape.id) === id &&
-        String(shape.type).toLowerCase().includes('image') &&
-        shape.left === geometry.left &&
-        shape.top === geometry.top &&
-        shape.width === geometry.width &&
-        shape.height === geometry.height
-      )
+    return readUntilConverged<boolean>({
+      signal,
+      accept: Boolean,
+      read: () =>
+        runtime().run(async (context: Runtime) => {
+          const item = await slide(context, index, signal)
+          if (typeof item.shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
+          const shape = item.shapes.getItem(id)
+          shape.load('id,left,top,width,height,type')
+          await sync(context, signal)
+          const close = (actual: unknown, expected: number) =>
+            typeof actual === 'number' && Math.abs(actual - expected) <= 0.01
+          return (
+            String(shape.id) === id &&
+            ['image', 'picture'].some((value) =>
+              String(shape.type).toLowerCase().includes(value),
+            ) &&
+            close(shape.left, geometry.left) &&
+            close(shape.top, geometry.top) &&
+            close(shape.width, geometry.width) &&
+            close(shape.height, geometry.height)
+          )
+        }),
     })
   }
   async removeImage(index: number, id: string): Promise<void> {

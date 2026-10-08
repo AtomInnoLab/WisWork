@@ -18,6 +18,7 @@ import {
   loadSnapshotIntoUniver,
   loadVisibleRange,
   loadWorkbookSkeleton,
+  workbookSkeletonId,
   matrixBounds,
   measureImage,
   navigateToAnchor,
@@ -53,6 +54,7 @@ import {
 } from './plan-operations'
 import { isNumericIdentifierText } from './cell-warning'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { upsertToolActivity } from '@wiswork/agent-runtime'
 
 import {
   CellValueType,
@@ -245,6 +247,7 @@ import { installMultiRowAutofit } from './autofit-multi-row'
 import { installCopyMaterialize } from './copy-materialize'
 import { applyUniverLocale } from './univer-locales'
 import { installRuleDetail } from './univer-rule-detail'
+import { installLazyFindBridge } from './lazy-find'
 import { installPopulatedDataValidationArrow } from './data-validation-arrow'
 import { installFormulaNullResultFix } from './formula-null-result'
 import { installNumberFormatFix } from './numfmt-fix'
@@ -857,164 +860,160 @@ export function App(): React.JSX.Element {
 
   const agentLoopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!agentLoopRef.current) {
-    agentLoopRef.current = createAgentController({
-      transport: createElectronTransport(() => aiSettingsRef.current!),
-      systemSuffix: aiLangDirective,
-      skill: composeSkills('sheets+files', '', [
-        createWorkbookSkill(sheetsSkillDeps()),
-        createFilesSkill(availableAttachments),
-        createSearchSkill(),
-      ]),
-      events: {
-        onText: (text) => {
-          if (text) runLastTextRef.current = text
-          // Status bar (and the ribbon-row status span) show a short state only;
-          // the full streamed prose lives in the chat panel.
-          setMessage(t('appAiThinking'))
-          // When the model retries successfully and keeps streaming after a
-          // mid-run failure (e.g. one apply error), clear the error flag —
-          // otherwise the whole successful message stays rendered in red.
-          patchLastAssistant((entry) => ({ ...entry, text, isError: false }))
-        },
-        onToolStart: (call) => {
-          // Live "running" chip: replaced in place by onToolExecuted
-          patchLastAssistant((entry) => ({
-            ...entry,
-            tools: [
-              ...entry.tools,
-              {
+    agentLoopRef.current = createAgentController(
+      {
+        transport: createElectronTransport(() => aiSettingsRef.current!),
+        systemSuffix: aiLangDirective,
+        skill: composeSkills('sheets+files', '', [
+          createWorkbookSkill(sheetsSkillDeps()),
+          createFilesSkill(availableAttachments),
+          createSearchSkill(),
+        ]),
+        events: {
+          onText: (text) => {
+            if (text) runLastTextRef.current = text
+            // Status bar (and the ribbon-row status span) show a short state only;
+            // the full streamed prose lives in the chat panel.
+            setMessage(t('appAiThinking'))
+            // When the model retries successfully and keeps streaming after a
+            // mid-run failure (e.g. one apply error), clear the error flag —
+            // otherwise the whole successful message stays rendered in red.
+            patchLastAssistant((entry) => ({ ...entry, text, isError: false }))
+          },
+          onToolStart: (call) => {
+            // Live "running" chip: replaced in place by onToolExecuted
+            patchLastAssistant((entry) => ({
+              ...entry,
+              tools: upsertToolActivity(entry.tools, {
+                callId: call.invocationId ?? call.id,
                 summary: call.name.replace(/[_-]+/g, ' '),
                 isError: false,
                 name: call.name,
                 running: true,
-              },
-            ],
-          }))
-        },
-        onToolExecuted: ({ call, execution }) => {
-          if (execution.mutated) runMutatedRef.current = true
-          const input = safeJsonInput(call.input)
-          const output = execution.output
-            ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
-            : undefined
-          runToolsRef.current.push({
-            name: call.name,
-            summary: execution.summary,
-            isError: !!execution.isError,
-            ...(input !== undefined ? { input } : {}),
-            ...(output !== undefined ? { output } : {}),
-          })
-          patchLastAssistant((entry) => {
-            // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-            const tools = [...entry.tools]
-            if (tools.at(-1)?.running) tools.pop()
-            return {
-              ...entry,
-              tools: [
-                ...tools,
-                {
+              }),
+            }))
+          },
+          onToolExecuted: ({ call, execution }) => {
+            if (execution.mutated) runMutatedRef.current = true
+            const input = safeJsonInput(call.input)
+            const output = execution.output
+              ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+              : undefined
+            runToolsRef.current.push({
+              name: call.name,
+              summary: execution.summary,
+              isError: !!execution.isError,
+              ...(input !== undefined ? { input } : {}),
+              ...(output !== undefined ? { output } : {}),
+            })
+            patchLastAssistant((entry) => {
+              return {
+                ...entry,
+                tools: upsertToolActivity(entry.tools, {
+                  callId: call.invocationId ?? call.id,
                   summary: execution.summary,
                   isError: !!execution.isError,
                   name: call.name,
                   ...(execution.output ? { output: execution.output.slice(0, 2000) } : {}),
-                },
-              ],
-            }
-          })
-        },
-        onDone: ({ text, cancelled, turnLimit }) => {
-          // Prefer tool summaries when the model finished via tools with no prose
-          // (agent-core fills history with COMPLETED_VIA_TOOLS_TEXT so follow-ups
-          // stay provider-safe; the UI can show the real work that ran).
-          const toolSummaries = (() => {
-            const lines: string[] = []
-            const seen = new Set<string>()
-            for (const tool of runToolsRef.current) {
-              if (!tool.summary || tool.isError || seen.has(tool.summary)) continue
-              seen.add(tool.summary)
-              lines.push(tool.summary)
-              if (lines.length >= 8) break
-            }
-            return lines.join('\n')
-          })()
-          // A cancelled run must keep the "stopped" notice: earlier narration or
-          // tool summaries would make an aborted run read as completed.
-          const prose =
-            text && text !== COMPLETED_VIA_TOOLS_TEXT
-              ? text
-              : cancelled
-                ? ''
-                : runLastTextRef.current || toolSummaries || text
-          // A final empty turn must not claim completion: reuse the model's last
-          // streamed text; with none, only a mutating run gets the "done" phrasing.
-          const fallback = cancelled
-            ? t('appAiStopped')
-            : runLastTextRef.current ||
-              toolSummaries ||
-              (runMutatedRef.current ? t('appAiNoSummary') : t('appAiNoAction'))
-          const finalText = turnLimit
-            ? [prose, t('appAiTurnLimit')].filter(Boolean).join('\n\n')
-            : prose || fallback
-          setMessage(cancelled ? t('appAiStopped') : t('appAiDone'))
-          patchLastAssistant((entry) => ({
-            ...entry,
-            text: finalText,
-            streaming: false,
-            isError: false,
-            // A stop mid-tool can leave a running placeholder behind — drop it
-            tools: entry.tools.filter((tl) => !tl.running),
-          }))
-          // Persist the assistant message (side effect outside the updater;
-          // tools stores the run's complete activity)
-          if (!cancelled && finalText) {
-            persistChatMessage('assistant', finalText, runToolsRef.current)
-          }
-          void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
-        },
-        onError: (error) => {
-          setMessage(error)
-          setChat((previous) => {
-            const next = [...previous]
-            // the loop rolled this run's user message out of the model context — surface that
-            for (let i = next.length - 1; i >= 0; i--) {
-              const entry = next[i]!
-              if (entry.role === 'user') {
-                next[i] = { ...entry, undelivered: true }
-                break
+                }),
               }
-            }
-            const last = next.at(-1)
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = {
-                ...last,
-                text: error,
-                isError: true,
-                streaming: false,
-                tools: last.tools.filter((tl) => !tl.running),
-              }
-            }
-            return next
-          })
-          // Signed-out failures get an inline sign-in button; detected via
-          // wiswork status rather than matching the localized error text
-          void window.desktopApi
-            .aiAccountStatus()
-            .then((status) => {
-              if (status.loggedIn) return
-              setChat((previous) => {
-                const next = [...previous]
-                const last = next.at(-1)
-                if (last?.role === 'assistant' && last.isError) {
-                  next[next.length - 1] = { ...last, loginRequired: true }
-                }
-                return next
-              })
             })
-            .catch(() => {})
-          void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
+          },
+          onDone: ({ text, cancelled, turnLimit }) => {
+            // Prefer tool summaries when the model finished via tools with no prose
+            // (agent-core fills history with COMPLETED_VIA_TOOLS_TEXT so follow-ups
+            // stay provider-safe; the UI can show the real work that ran).
+            const toolSummaries = (() => {
+              const lines: string[] = []
+              const seen = new Set<string>()
+              for (const tool of runToolsRef.current) {
+                if (!tool.summary || tool.isError || seen.has(tool.summary)) continue
+                seen.add(tool.summary)
+                lines.push(tool.summary)
+                if (lines.length >= 8) break
+              }
+              return lines.join('\n')
+            })()
+            // A cancelled run must keep the "stopped" notice: earlier narration or
+            // tool summaries would make an aborted run read as completed.
+            const prose =
+              text && text !== COMPLETED_VIA_TOOLS_TEXT
+                ? text
+                : cancelled
+                  ? ''
+                  : runLastTextRef.current || toolSummaries || text
+            // A final empty turn must not claim completion: reuse the model's last
+            // streamed text; with none, only a mutating run gets the "done" phrasing.
+            const fallback = cancelled
+              ? t('appAiStopped')
+              : runLastTextRef.current ||
+                toolSummaries ||
+                (runMutatedRef.current ? t('appAiNoSummary') : t('appAiNoAction'))
+            const finalText = turnLimit
+              ? [prose, t('appAiTurnLimit')].filter(Boolean).join('\n\n')
+              : prose || fallback
+            setMessage(cancelled ? t('appAiStopped') : t('appAiDone'))
+            patchLastAssistant((entry) => ({
+              ...entry,
+              text: finalText,
+              streaming: false,
+              isError: false,
+              // A stop mid-tool can leave a running placeholder behind — drop it
+              tools: entry.tools.filter((tl) => !tl.running),
+            }))
+            // Persist the assistant message (side effect outside the updater;
+            // tools stores the run's complete activity)
+            if (!cancelled && finalText) {
+              persistChatMessage('assistant', finalText, runToolsRef.current)
+            }
+            void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
+          },
+          onError: (error) => {
+            setMessage(error)
+            setChat((previous) => {
+              const next = [...previous]
+              // the loop rolled this run's user message out of the model context — surface that
+              for (let i = next.length - 1; i >= 0; i--) {
+                const entry = next[i]!
+                if (entry.role === 'user') {
+                  next[i] = { ...entry, undelivered: true }
+                  break
+                }
+              }
+              const last = next.at(-1)
+              if (last?.role === 'assistant') {
+                next[next.length - 1] = {
+                  ...last,
+                  text: error,
+                  isError: true,
+                  streaming: false,
+                  tools: last.tools.filter((tl) => !tl.running),
+                }
+              }
+              return next
+            })
+            // Signed-out failures get an inline sign-in button; detected via
+            // wiswork status rather than matching the localized error text
+            void window.desktopApi
+              .aiAccountStatus()
+              .then((status) => {
+                if (status.loggedIn) return
+                setChat((previous) => {
+                  const next = [...previous]
+                  const last = next.at(-1)
+                  if (last?.role === 'assistant' && last.isError) {
+                    next[next.length - 1] = { ...last, loginRequired: true }
+                  }
+                  return next
+                })
+              })
+              .catch(() => {})
+            void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
+          },
         },
       },
-    })
+      window.codexRuntime ? { host: 'sheets', api: window.codexRuntime } : undefined,
+    )
   }
   useAgentControllerCleanup(agentLoopRef)
   useEffect(
@@ -1363,6 +1362,7 @@ export function App(): React.JSX.Element {
     // Rule-management panels show what each rule actually does: list options /
     // source range, CF formula text, ⚠ on #REF! dead rules.
     const ruleDetailDisposable = installRuleDetail(runtime)
+    const lazyFindDisposable = installLazyFindBridge({ runtime, lazyWorkbookRef, setMessage })
     const scrollDisposable = runtime.univerAPI.addEvent(
       runtime.univerAPI.Event.Scroll,
       (params) => {
@@ -1523,11 +1523,15 @@ export function App(): React.JSX.Element {
     const journalDisposable = runtime.univerAPI.addEvent(
       runtime.univerAPI.Event.CommandExecuted,
       (event) => {
-        if (journalSuppression.active) return
         // The formula engine re-applies cached results with these execution
         // options; they are derived state, never user edits.
         const options = event.options as { fromFormula?: boolean } | undefined
-        if (options?.fromFormula) return
+        if (options?.fromFormula) {
+          const state = lazyWorkbookRef.current
+          if (state) state.scanRevision = (state.scanRevision ?? 0) + 1
+          return
+        }
+        if (journalSuppression.active) return
         // The copy finished (or failed); a stale source must not claim a
         // later, unrelated insert-sheet.
         if (event.id === COPY_SHEET_COMMAND) {
@@ -1568,6 +1572,7 @@ export function App(): React.JSX.Element {
           }
           return
         }
+        state.scanRevision = (state.scanRevision ?? 0) + 1
         const params = event.params as
           | {
               unitId?: string
@@ -2174,6 +2179,7 @@ export function App(): React.JSX.Element {
       copyMaterializeDisposable.dispose()
       dataValidationArrowDisposable.dispose()
       ruleDetailDisposable()
+      lazyFindDisposable.dispose()
       scrollDisposable.dispose()
       zoomDisposable.dispose()
       editStartDisposable.dispose()
@@ -2887,7 +2893,9 @@ export function App(): React.JSX.Element {
     demoVisualDisposablesRef.current = []
     const state: LazyWorkbookState = {
       file: selected,
+      expectedWorkbookId: workbookSkeletonId(selected),
       generation: Date.now(),
+      scanRevision: 0,
       loadedRanges: new Map(),
       loadingKeys: new Map(),
       retryTimers: new Map(),

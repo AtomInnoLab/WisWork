@@ -338,6 +338,7 @@ export const appStrings = defineStrings({
     appZoom: '缩放 {percent}%。',
     appTopRowFrozen: '已冻结首行——⌘S 保存。',
     appFirstColFrozen: '已冻结首列——⌘S 保存。',
+    appFindScanTruncated: '大工作表：搜索提前停止（已扫描 {cells} 个单元格），结果可能不完整。',
     appReplaceNeedsFullLoad: '替换需要完整加载模式——请改用查找。',
     appGridlinesHiddenSave: '网格线已隐藏——⌘S 保存。',
     appGridlinesShownSave: '网格线已显示——⌘S 保存。',
@@ -1549,6 +1550,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent}%.',
     appTopRowFrozen: 'Top row frozen — saves with ⌘S.',
     appFirstColFrozen: 'First column frozen — saves with ⌘S.',
+    appFindScanTruncated:
+      'Large sheet: search stopped after {cells} cells — results may be incomplete.',
     appReplaceNeedsFullLoad: 'Replace needs the fully-loaded mode — use Find instead.',
     appGridlinesHiddenSave: 'Gridlines hidden — saves with ⌘S.',
     appGridlinesShownSave: 'Gridlines shown — saves with ⌘S.',
@@ -2802,6 +2805,8 @@ export const appStrings = defineStrings({
     appZoom: 'ズーム {percent}%。',
     appTopRowFrozen: '先頭行を固定しました — ⌘S で保存します。',
     appFirstColFrozen: '先頭列を固定しました — ⌘S で保存します。',
+    appFindScanTruncated:
+      '大きなシート: {cells} セルで検索を中断しました。結果が不完全な場合があります。',
     appReplaceNeedsFullLoad: '置換には完全読み込みモードが必要です — 検索をご利用ください。',
     appGridlinesHiddenSave: '目盛線を非表示にしました — ⌘S で保存します。',
     appGridlinesShownSave: '目盛線を表示しました — ⌘S で保存します。',
@@ -4061,6 +4066,8 @@ export const appStrings = defineStrings({
     appZoom: '확대/축소 {percent}%.',
     appTopRowFrozen: '첫 행을 고정했습니다 — ⌘S로 저장합니다.',
     appFirstColFrozen: '첫 열을 고정했습니다 — ⌘S로 저장합니다.',
+    appFindScanTruncated:
+      '큰 시트: {cells}개 셀에서 검색을 중단했습니다. 결과가 불완전할 수 있습니다.',
     appReplaceNeedsFullLoad: '바꾸기에는 전체 로드 모드가 필요합니다 — 대신 찾기를 사용하십시오.',
     appGridlinesHiddenSave: '눈금선을 숨겼습니다 — ⌘S로 저장합니다.',
     appGridlinesShownSave: '눈금선을 표시했습니다 — ⌘S로 저장합니다.',
@@ -5343,6 +5350,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent} %.',
     appTopRowFrozen: 'Ligne supérieure figée — enregistrez avec ⌘S.',
     appFirstColFrozen: 'Première colonne figée — enregistrez avec ⌘S.',
+    appFindScanTruncated:
+      'Grande feuille : recherche interrompue après {cells} cellules — les résultats peuvent être incomplets.',
     appReplaceNeedsFullLoad:
       'Le remplacement nécessite le mode de chargement complet — utilisez plutôt Rechercher.',
     appGridlinesHiddenSave: 'Quadrillage masqué — enregistrez avec ⌘S.',
@@ -6617,6 +6626,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent} %.',
     appTopRowFrozen: 'Oberste Zeile fixiert — mit ⌘S speichern.',
     appFirstColFrozen: 'Erste Spalte fixiert — mit ⌘S speichern.',
+    appFindScanTruncated:
+      'Großes Blatt: Suche nach {cells} Zellen abgebrochen – Ergebnisse können unvollständig sein.',
     appReplaceNeedsFullLoad:
       'Ersetzen erfordert den Volllademodus — verwenden Sie stattdessen Suchen.',
     appGridlinesHiddenSave: 'Gitternetzlinien ausgeblendet — mit ⌘S speichern.',
@@ -7886,6 +7897,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent} %.',
     appTopRowFrozen: 'Fila superior inmovilizada — guarde con ⌘S.',
     appFirstColFrozen: 'Primera columna inmovilizada — guarde con ⌘S.',
+    appFindScanTruncated:
+      'Hoja grande: la búsqueda se detuvo tras {cells} celdas; los resultados pueden estar incompletos.',
     appReplaceNeedsFullLoad:
       'Reemplazar requiere el modo de carga completa — use Buscar en su lugar.',
     appGridlinesHiddenSave: 'Líneas de cuadrícula ocultas — guarde con ⌘S.',
@@ -9110,6 +9123,7 @@ export const appStrings = defineStrings({
     appZoom: 'ย่อ/ขยาย {percent}%',
     appTopRowFrozen: 'ตรึงแถวบนสุดแล้ว — บันทึกด้วย ⌘S',
     appFirstColFrozen: 'ตรึงคอลัมน์แรกแล้ว — บันทึกด้วย ⌘S',
+    appFindScanTruncated: 'ชีตขนาดใหญ่: หยุดการค้นหาหลังจาก {cells} เซลล์ ผลลัพธ์อาจไม่ครบถ้วน',
     appReplaceNeedsFullLoad: 'การแทนที่ต้องใช้โหมดโหลดเต็ม — ใช้ค้นหาแทน',
     appGridlinesHiddenSave: 'ซ่อนเส้นตารางแล้ว — บันทึกด้วย ⌘S',
     appGridlinesShownSave: 'แสดงเส้นตารางแล้ว — บันทึกด้วย ⌘S',
@@ -10324,6 +10338,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent}%.',
     appTopRowFrozen: 'Baris atas dibekukan — simpan dengan ⌘S.',
     appFirstColFrozen: 'Kolom pertama dibekukan — simpan dengan ⌘S.',
+    appFindScanTruncated:
+      'Lembar besar: pencarian berhenti setelah {cells} sel — hasil mungkin tidak lengkap.',
     appReplaceNeedsFullLoad:
       'Mengganti memerlukan mode muat penuh — gunakan Temukan sebagai gantinya.',
     appGridlinesHiddenSave: 'Garis kisi disembunyikan — simpan dengan ⌘S.',
@@ -11569,6 +11585,8 @@ export const appStrings = defineStrings({
     appZoom: 'Масштаб {percent}%.',
     appTopRowFrozen: 'Верхняя строка закреплена — сохраните с помощью ⌘S.',
     appFirstColFrozen: 'Первый столбец закреплён — сохраните с помощью ⌘S.',
+    appFindScanTruncated:
+      'Большой лист: поиск остановлен после {cells} ячеек — результаты могут быть неполными.',
     appReplaceNeedsFullLoad: 'Замена требует режима полной загрузки — используйте поиск.',
     appGridlinesHiddenSave: 'Сетка скрыта — сохраните с помощью ⌘S.',
     appGridlinesShownSave: 'Сетка показана — сохраните с помощью ⌘S.',
@@ -12788,6 +12806,7 @@ export const appStrings = defineStrings({
     appZoom: 'التكبير/التصغير {percent}%.',
     appTopRowFrozen: 'جُمّد الصف العلوي — احفظ بـ ⌘S.',
     appFirstColFrozen: 'جُمّد العمود الأول — احفظ بـ ⌘S.',
+    appFindScanTruncated: 'ورقة كبيرة: توقف البحث بعد {cells} خلية — قد تكون النتائج غير مكتملة.',
     appReplaceNeedsFullLoad: 'يتطلب الاستبدال وضع التحميل الكامل — استخدم البحث بدلاً منه.',
     appGridlinesHiddenSave: 'أُخفيت خطوط الشبكة — احفظ بـ ⌘S.',
     appGridlinesShownSave: 'أُظهرت خطوط الشبكة — احفظ بـ ⌘S.',
@@ -14026,6 +14045,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent}%.',
     appTopRowFrozen: 'Primeira linha congelada — salve com ⌘S.',
     appFirstColFrozen: 'Primeira coluna congelada — salve com ⌘S.',
+    appFindScanTruncated:
+      'Planilha grande: a pesquisa parou após {cells} células — os resultados podem estar incompletos.',
     appReplaceNeedsFullLoad: 'Substituir requer o modo de carregamento completo — use Localizar.',
     appGridlinesHiddenSave: 'Linhas de grade ocultas — salve com ⌘S.',
     appGridlinesShownSave: 'Linhas de grade exibidas — salve com ⌘S.',
@@ -15284,6 +15305,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoom {percent}%.',
     appTopRowFrozen: 'Riga superiore bloccata — salva con ⌘S.',
     appFirstColFrozen: 'Prima colonna bloccata — salva con ⌘S.',
+    appFindScanTruncated:
+      'Foglio di grandi dimensioni: ricerca interrotta dopo {cells} celle; i risultati potrebbero essere incompleti.',
     appReplaceNeedsFullLoad: 'Sostituisci richiede la modalità a caricamento completo — usa Trova.',
     appGridlinesHiddenSave: 'Griglia nascosta — salva con ⌘S.',
     appGridlinesShownSave: 'Griglia visualizzata — salva con ⌘S.',
@@ -16540,6 +16563,8 @@ export const appStrings = defineStrings({
     appZoom: 'Powiększenie {percent}%.',
     appTopRowFrozen: 'Zablokowano górny wiersz — zapisz za pomocą ⌘S.',
     appFirstColFrozen: 'Zablokowano pierwszą kolumnę — zapisz za pomocą ⌘S.',
+    appFindScanTruncated:
+      'Duży arkusz: wyszukiwanie zatrzymane po {cells} komórkach — wyniki mogą być niepełne.',
     appReplaceNeedsFullLoad: 'Zamienianie wymaga trybu pełnego ładowania — użyj funkcji Znajdź.',
     appGridlinesHiddenSave: 'Linie siatki ukryte — zapisz za pomocą ⌘S.',
     appGridlinesShownSave: 'Linie siatki pokazane — zapisz za pomocą ⌘S.',
@@ -17801,6 +17826,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zoomen {percent}%.',
     appTopRowFrozen: 'Bovenste rij geblokkeerd — sla op met ⌘S.',
     appFirstColFrozen: 'Eerste kolom geblokkeerd — sla op met ⌘S.',
+    appFindScanTruncated:
+      'Groot werkblad: zoeken gestopt na {cells} cellen — resultaten kunnen onvolledig zijn.',
     appReplaceNeedsFullLoad: 'Vervangen vereist de volledig geladen modus — gebruik Zoeken.',
     appGridlinesHiddenSave: 'Rasterlijnen verborgen — sla op met ⌘S.',
     appGridlinesShownSave: 'Rasterlijnen weergegeven — sla op met ⌘S.',
@@ -19040,6 +19067,8 @@ export const appStrings = defineStrings({
     appZoom: 'Zum {percent}%.',
     appTopRowFrozen: 'Baris teratas dibekukan — simpan dengan ⌘S.',
     appFirstColFrozen: 'Lajur pertama dibekukan — simpan dengan ⌘S.',
+    appFindScanTruncated:
+      'Helaian besar: carian berhenti selepas {cells} sel — hasil mungkin tidak lengkap.',
     appReplaceNeedsFullLoad: 'Ganti memerlukan mod muat penuh — gunakan Cari.',
     appGridlinesHiddenSave: 'Garis grid disembunyikan — simpan dengan ⌘S.',
     appGridlinesShownSave: 'Garis grid ditunjukkan — simpan dengan ⌘S.',
@@ -20239,6 +20268,8 @@ export const appStrings = defineStrings({
     appZoom: 'זום {percent}%.',
     appTopRowFrozen: 'השורה העליונה הוקפאה — שמור עם ⌘S.',
     appFirstColFrozen: 'העמודה הראשונה הוקפאה — שמור עם ⌘S.',
+    appFindScanTruncated:
+      'גיליון גדול: החיפוש הופסק לאחר {cells} תאים — ייתכן שהתוצאות אינן מלאות.',
     appReplaceNeedsFullLoad: 'החלפה דורשת מצב טעינה מלאה — השתמש בחיפוש במקום.',
     appGridlinesHiddenSave: 'קווי הרשת הוסתרו — שמור עם ⌘S.',
     appGridlinesShownSave: 'קווי הרשת מוצגים — שמור עם ⌘S.',
@@ -21454,6 +21485,7 @@ export const appStrings = defineStrings({
     appZoom: 'ज़ूम {percent}%।',
     appTopRowFrozen: 'शीर्ष पंक्ति फ़्रीज़ की गई — ⌘S से सहेजें।',
     appFirstColFrozen: 'पहला स्तंभ फ़्रीज़ किया गया — ⌘S से सहेजें।',
+    appFindScanTruncated: 'बड़ी शीट: {cells} सेल के बाद खोज रुक गई — परिणाम अधूरे हो सकते हैं।',
     appReplaceNeedsFullLoad: 'बदलने के लिए पूर्ण-लोड मोड चाहिए — इसके बजाय ढूँढें का उपयोग करें।',
     appGridlinesHiddenSave: 'ग्रिडलाइन छिपाई गईं — ⌘S से सहेजें।',
     appGridlinesShownSave: 'ग्रिडलाइन दिखाई गईं — ⌘S से सहेजें।',
@@ -22632,6 +22664,7 @@ export const appStrings = defineStrings({
     appZoom: '縮放 {percent}%。',
     appTopRowFrozen: '已凍結頂端列——⌘S 儲存。',
     appFirstColFrozen: '已凍結首欄——⌘S 儲存。',
+    appFindScanTruncated: '大工作表：搜尋提前停止（已掃描 {cells} 個儲存格），結果可能不完整。',
     appReplaceNeedsFullLoad: '取代需要完整載入模式——請改用尋找。',
     appGridlinesHiddenSave: '格線已隱藏——⌘S 儲存。',
     appGridlinesShownSave: '格線已顯示——⌘S 儲存。',

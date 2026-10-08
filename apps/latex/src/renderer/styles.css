@@ -1,7 +1,7 @@
 :root {
   font-family: Arial, Inter, ui-sans-serif, system-ui, sans-serif;
   --accent: #0f7fff;
-  --latex-pane-header-height: 48px;
+  --latex-pane-header-height: 44px;
   --latex-workbench-bg: var(--surface-subtle);
   --latex-editor-bg: #ffffff;
   --latex-editor-text: var(--text-primary);
@@ -478,7 +478,7 @@ button:disabled {
 .preview-stale {
   position: absolute;
   z-index: 10;
-  top: 48px;
+  top: var(--latex-pane-header-height);
   left: 50%;
   transform: translateX(-50%);
   padding: 7px 12px;
@@ -841,7 +841,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px 10px 14px;
+  padding: 8px 12px 8px 14px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
   font-weight: 600;

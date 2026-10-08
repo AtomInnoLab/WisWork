@@ -92,7 +92,7 @@ export interface PresentationNativeAddBatch {
 }
 export type NativeModifyOperation = Extract<
   PowerPointDeclarativeOperation,
-  { op: 'set_shape_text' | 'set_shape_geometry' | 'delete_shape' }
+  { op: 'set_shape_text' | 'set_shape_text_style' | 'set_shape_geometry' | 'delete_shape' }
 >
 export interface PresentationNativeModifyBatch {
   version: 3
@@ -581,6 +581,7 @@ function validNativeAddOperation(v: unknown, slideIndex: number): v is NativeAdd
         'fontSize',
         'color',
         'bold',
+        'italic',
         'align',
         'margin',
         'verticalAlignment',
@@ -591,6 +592,7 @@ function validNativeAddOperation(v: unknown, slideIndex: number): v is NativeAdd
       optional(v, 'fontSize', (x) => range(x, 6, 96)) &&
       optional(v, 'color', color) &&
       optional(v, 'bold', (x) => typeof x === 'boolean') &&
+      optional(v, 'italic', (x) => typeof x === 'boolean') &&
       optional(v, 'align', (x) => ['left', 'center', 'right'].includes(String(x))) &&
       optional(v, 'margin', (x) => range(x, 0, 72)) &&
       optional(v, 'verticalAlignment', (x) => ['top', 'middle', 'bottom'].includes(String(x)))
@@ -934,6 +936,28 @@ function validateNativeModifyBatch(value: Record<string, unknown>): boolean {
         Object.keys(op).sort().join(',') !== 'op,shape_id,slide_index,text' ||
         typeof op.text !== 'string' ||
         op.text.length > 12000
+      )
+        return false
+    } else if (op.op === 'set_shape_text_style') {
+      const fields = ['color', 'fontFamily', 'fontSize', 'bold', 'italic']
+      if (
+        Object.keys(op).some(
+          (key) => !['op', 'slide_index', 'shape_id', ...fields].includes(key),
+        ) ||
+        !fields.some((key) => Object.hasOwn(op, key)) ||
+        (op.color !== undefined &&
+          (typeof op.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(op.color))) ||
+        (op.fontFamily !== undefined &&
+          (typeof op.fontFamily !== 'string' ||
+            !op.fontFamily.trim() ||
+            op.fontFamily.length > 128)) ||
+        (op.fontSize !== undefined &&
+          (typeof op.fontSize !== 'number' ||
+            !Number.isFinite(op.fontSize) ||
+            op.fontSize < 1 ||
+            op.fontSize > 400)) ||
+        (op.bold !== undefined && typeof op.bold !== 'boolean') ||
+        (op.italic !== undefined && typeof op.italic !== 'boolean')
       )
         return false
     } else if (op.op === 'set_shape_geometry') {

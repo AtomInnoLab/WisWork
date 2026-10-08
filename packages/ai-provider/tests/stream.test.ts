@@ -37,6 +37,41 @@ describe('sseLines', () => {
     const lines: string[] = []
     for await (const line of sseLines(body)) lines.push(line)
     expect(lines).toEqual(['data: a', 'data: b', 'data: c'])
+    expect(() => body.getReader()).not.toThrow()
+  })
+
+  it('cancels and releases the reader when the consumer abandons the stream', async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: first\n'))
+      },
+      cancel,
+    })
+    const lines = sseLines(body)
+
+    await expect(lines.next()).resolves.toMatchObject({ value: 'data: first', done: false })
+    await lines.return(undefined)
+
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(() => body.getReader()).not.toThrow()
+  })
+
+  it('releases the reader when the consumer throws into the generator', async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: first\n'))
+      },
+      cancel,
+    })
+    const lines = sseLines(body)
+
+    await lines.next()
+    await expect(lines.throw(new Error('consumer_failed'))).rejects.toThrow('consumer_failed')
+
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(() => body.getReader()).not.toThrow()
   })
 })
 

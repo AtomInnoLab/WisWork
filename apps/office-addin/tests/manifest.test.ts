@@ -9,6 +9,7 @@ import {
   officeBuildId,
   officeCapabilityFlags,
   officeDiagnosticSamplePercent,
+  officePairingResumeEnabled,
   officeRemoteDiagnosticsEnabled,
   officePresentationRolloutPercent,
   presentationRolloutEnabled,
@@ -31,9 +32,10 @@ describe('Office Add-in manifest and routes', () => {
     expect(config).toBeDefined()
     const manifest = renderDeploymentManifest(template, config!)
 
-    expect(manifest).toContain('<Version>0.3.3.0</Version>')
+    expect(manifest).toContain('<Version>0.3.42.0</Version>')
+    expect(manifest).toContain('<DisplayName DefaultValue="WisWork" />')
     expect(manifest).toContain(
-      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.3" />',
+      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.42" />',
     )
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')
@@ -83,6 +85,7 @@ describe('Office Add-in manifest and routes', () => {
     ).toBe('http://127.0.0.1:44000 http://127.0.0.1:44001')
     expect(viteConfig).not.toContain('oauth/callback')
     expect(taskpane).toContain("connect-src 'self' __WISWORK_CONNECT_ORIGINS__")
+    expect(taskpane).toContain('<title>WisWork</title>')
     expect(taskpane).not.toMatch(/auth\.dev|wisusage|callback/i)
     expect(viteConfig).not.toContain("'Access-Control-Allow-Origin': '*'")
   })
@@ -171,6 +174,24 @@ describe('Office Add-in manifest and routes', () => {
     }
   })
 
+  it('enables persistent pairing by default with an exact build rollback flag', () => {
+    expect(officePairingResumeEnabled({})).toBe(true)
+    expect(officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: '1' })).toBe(true)
+    expect(officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: '0' })).toBe(false)
+    expect(() =>
+      officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: 'false' }),
+    ).toThrow('invalid_office_pairing_resume')
+    expect(() => officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: '' })).toThrow(
+      'invalid_office_pairing_resume',
+    )
+    expect(
+      deploymentConfig({
+        ...validEnv,
+        VITE_WISWORK_OFFICE_PAIRING_RESUME: 'false',
+      }),
+    ).toBeUndefined()
+  })
+
   it('uses a validated deploy build identifier instead of an uncorrelated unknown value', async () => {
     expect(officeBuildId({ VITE_WISWORK_OFFICE_BUILD_ID: 'abc123def456' }, 'fallback')).toBe(
       'abc123def456',
@@ -188,6 +209,11 @@ describe('Office Add-in manifest and routes', () => {
     const readme = await readFile(resolve(import.meta.dirname, '../README.md'), 'utf8')
     expect(readme).toContain('wss://office.8-216-134-194.sslip.io/office-relay')
     expect(readme).toContain('VITE_WISWORK_OFFICE_TRANSPORT=loopback')
+    expect(readme).toContain('Relay → WisWork PC → taskpane')
+    expect(readme).toContain('VITE_WISWORK_OFFICE_PAIRING_RESUME=0')
+    expect(readme).toContain('WISWORK_OFFICE_PAIRING_RESUME=0')
+    expect(readme).toContain('WISWORK_RELAY_PAIRING_RESUME=0')
+    expect(readme).toMatch(/not completed by automated\s+verification/)
     expect(readme).not.toContain('WISWORK_OFFICE_ALLOWED_ORIGIN')
   })
 })

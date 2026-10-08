@@ -101,6 +101,10 @@ import {
 } from '../skills/powerpoint/presentation-delivery.js'
 import { createBrowserPresentationImportAdapter } from '../skills/powerpoint/presentation-import.js'
 import type { AgentSkill } from '@wiswork/agent-core'
+import type {
+  PresentationTelemetryEvent,
+  PresentationVerificationFlags,
+} from '@wiswork/presentation-verification'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import {
   createOfficeDocumentClient,
@@ -109,6 +113,7 @@ import {
   type OfficeHost,
 } from '../office-document.js'
 import { BrowserExcelAdapter } from '../skills/excel/browser-excel-adapter.js'
+import { createBrowserExcelElevatedAdapter } from '../skills/excel/elevated-excel-adapter.js'
 import {
   BrowserExcelImportMediaAdapter,
   supportsExcelImportMedia,
@@ -116,6 +121,7 @@ import {
 import { createExcelImportMediaSkill } from '../skills/excel/excel-import-media.js'
 import { createExcelSkill } from '../skills/excel/excel-skill.js'
 import { BrowserPowerPointAdapter } from '../skills/powerpoint/browser-powerpoint-adapter.js'
+import { createBrowserPowerPointElevatedAdapter } from '../skills/powerpoint/elevated-powerpoint-adapter.js'
 import {
   BrowserPowerPointImportMediaAdapter,
   supportsPowerPointImportMedia,
@@ -128,12 +134,19 @@ import {
 import { createPowerPointSkill } from '../skills/powerpoint/powerpoint-skill.js'
 import { createPresentationNativeMasterSkill } from '../skills/powerpoint/presentation-native-master.js'
 import type { PresentationNativeMasterChange } from '../skills/powerpoint/presentation-native-master-change.js'
+import { createBrowserPowerPointVerificationAuthority } from '../skills/powerpoint/powerpoint-verification.js'
 import { createSharedBrowserSkill } from '../skills/shared/shared-skill.js'
+import {
+  createElevatedOfficeSkill,
+  type ElevatedOfficeAdapter,
+  type ElevatedOfficeAuthority,
+} from '../skills/shared/elevated-office-program.js'
 import { supportsBrowserMediaValidation } from '../skills/shared/import-media.js'
 import { MAX_SKILL_BYTES, SkillRegistry } from '../skills/shared/skill-registry.js'
 import { SkillPackageWorkerRuntime } from '../skills/shared/skill-package-runtime.js'
 import { InMemoryVfs, MAX_VFS_FILE_BYTES } from '../skills/shared/vfs.js'
 import { BrowserWordAdapter } from '../skills/word/browser-word-adapter.js'
+import { createBrowserWordElevatedAdapter } from '../skills/word/elevated-word-adapter.js'
 import { createWordSkill } from '../skills/word/word-skill.js'
 import { createOfficeSkill } from './office-skill.js'
 import {
@@ -143,6 +156,7 @@ import {
   type StructuredProposalController,
 } from './proposal-controller.js'
 import { composeOfficeSkills } from './skill-registry.js'
+import { prepareOfficeScreenshotPreview } from './office-screenshot-preview.js'
 
 export interface OfficeHostRuntime {
   readonly team?: PresentationTeamController
@@ -175,6 +189,9 @@ export interface OfficeHostRuntime {
   vfs: InMemoryVfs
   skills: SkillRegistry
   readonly skillPackagesEnabled: boolean
+  enableElevatedOffice(authority: () => ElevatedOfficeAuthority, confirmationTitle?: string): void
+  disableElevatedOffice(): void
+  setPowerPointImageFetchAvailable?(available: boolean): void
   uploadFile(name: string, content: Promise<ArrayBuffer>): Promise<void>
   installSkill(source: Promise<string>): Promise<void>
   installSkillPackage(source: Promise<ArrayBuffer>, signal?: AbortSignal): Promise<void>
@@ -313,6 +330,15 @@ export function createOfficeHostRuntime(
     imageAdapterOverrideForTests?: boolean
     platform?: string
     diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
+    presentationVerification?: PresentationVerificationFlags
+    presentationTelemetry?: (event: PresentationTelemetryEvent) => void
+    additionalSkills?: AgentSkill[]
+    fetchPowerPointImage?: (url: string, signal?: AbortSignal) => Promise<Uint8Array>
+    powerPointImageFetchAvailable?: () => boolean
+    /** Present only for an active, signed-in, paired Enhanced Office session. */
+    elevatedOfficeAdapter?: ElevatedOfficeAdapter
+    elevatedOfficeAuthority?: () => ElevatedOfficeAuthority
+    elevatedOfficeConfirmationTitle?: string
   } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
@@ -484,9 +510,17 @@ export function createOfficeHostRuntime(
           documentId: options.presentation.documentId,
         })
       : undefined
+  const wordAdapter = host === 'word' ? new BrowserWordAdapter() : undefined
+  const excelAdapter = host === 'excel' ? new BrowserExcelAdapter() : undefined
+  const presentationFlags = options.presentationVerification ?? {
+    planning: true,
+    verifiedCompletion: true,
+    visualReview: true,
+    autoCorrection: false,
+  }
   const hostSkill = {
-    word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
-    excel: () => createExcelSkill({ adapter: new BrowserExcelAdapter(), proposals }),
+    word: () => createWordSkill({ adapter: wordAdapter!, vfs, proposals }),
+    excel: () => createExcelSkill({ adapter: excelAdapter!, proposals }),
     powerpoint: () =>
       createPowerPointSkill({
         adapter: powerPointAdapter!,
@@ -508,10 +542,16 @@ export function createOfficeHostRuntime(
             throw new Error('presentation_existing_persistence_unavailable')
           return nativeMaster!.propose(operations, explanation, signal)
         },
-        durableDuplicate: async (slideIndex, explanation, signal, toolName) => {
+        durableDuplicate: async (slideIndex, explanation, signal, toolName, validateProduction) => {
           if (!slideDuplication || !options.presentation?.available())
             throw new Error('presentation_existing_persistence_unavailable')
-          return slideDuplication.propose(slideIndex, explanation, signal, toolName)
+          return slideDuplication.propose(
+            slideIndex,
+            explanation,
+            signal,
+            toolName,
+            validateProduction,
+          )
         },
         durableModify: async (operations, explanation, signal) => {
           if (!nativeModify || !options.presentation?.available())
@@ -625,6 +665,12 @@ export function createOfficeHostRuntime(
                 writeExistingChartChange: localBinding.writeExistingChartChange,
               }
             : undefined,
+        prepareScreenshot: prepareOfficeScreenshotPreview,
+        verificationAuthority: presentationFlags.verifiedCompletion
+          ? createBrowserPowerPointVerificationAuthority(powerPointAdapter!)
+          : undefined,
+        presentationFlags,
+        presentationTelemetry: options.presentationTelemetry,
       }),
   }[host]()
   const extensions =
@@ -648,6 +694,11 @@ export function createOfficeHostRuntime(
                 adapter: new BrowserPowerPointImportMediaAdapter(powerPointAdapter),
                 proposals,
                 vfs,
+                fetchImage: options.fetchPowerPointImage,
+                validateMutation: (index) =>
+                  (hostSkill as ReturnType<typeof createPowerPointSkill>).validateImageMutation(
+                    index,
+                  ),
               }),
             ]
           : []
@@ -936,6 +987,7 @@ export function createOfficeHostRuntime(
   }
   const composedBase = composeOfficeSkills(hostSkill, shared, [
     ...extensions,
+    ...(options.additionalSkills ?? []),
     ...(baselineSkill ? [baselineSkill] : []),
     ...(existingEditing ? [existingEditing] : []),
     ...(existingBatchEditing ? [existingBatchEditing] : []),
@@ -1847,8 +1899,74 @@ export function createOfficeHostRuntime(
                                               : base.executeTool(call, signal),
       }
     : base
+  const adapterFor = (authority: () => ElevatedOfficeAuthority) =>
+    host === 'word'
+      ? createBrowserWordElevatedAdapter({ adapter: wordAdapter!, authority })
+      : host === 'excel'
+        ? createBrowserExcelElevatedAdapter({ adapter: excelAdapter!, authority })
+        : createBrowserPowerPointElevatedAdapter({ adapter: powerPointAdapter!, authority })
+  const elevatedOfficeAdapter =
+    options.elevatedOfficeAdapter ??
+    (options.elevatedOfficeAuthority ? adapterFor(options.elevatedOfficeAuthority) : undefined)
+  if (elevatedOfficeAdapter?.host !== undefined && elevatedOfficeAdapter.host !== host)
+    throw new Error('raw_office_adapter_invalid')
+  let elevated = elevatedOfficeAdapter
+    ? createElevatedOfficeSkill({
+        host,
+        adapter: elevatedOfficeAdapter,
+        proposals,
+        confirmationTitle: options.elevatedOfficeConfirmationTitle,
+      })
+    : undefined
+  const composed = skill
+  let imageFetchAvailable = options.powerPointImageFetchAvailable?.() ?? true
+  const currentTools = () =>
+    [...composed.tools, ...(elevated?.tools ?? [])].filter(
+      (tool) => imageFetchAvailable || tool.name !== 'insert_web_image',
+    )
+  const setPowerPointImageFetchAvailable = (available: boolean) => {
+    imageFetchAvailable = available
+  }
+  const dynamicSkill: AgentSkill = {
+    ...composed,
+    get systemPrompt() {
+      return `${composed.systemPrompt}\nRaw Office tools are absent unless a paired Enhanced authority enables them.`
+    },
+    get tools() {
+      return currentTools()
+    },
+    executeTool(call, signal) {
+      if (call.name === 'insert_web_image' && !imageFetchAvailable)
+        return {
+          output: 'image_fetch_unavailable',
+          isError: true,
+          mutated: false,
+          summary: call.name,
+        }
+      return call.name === 'propose_raw_office_edit' && elevated
+        ? elevated.executeTool(call, signal)
+        : composed.executeTool(call, signal)
+    },
+  }
+  const enableElevatedOffice = (
+    authority: () => ElevatedOfficeAuthority,
+    confirmationTitle?: string,
+  ) => {
+    if (elevated) return
+    elevated = createElevatedOfficeSkill({
+      host,
+      adapter: adapterFor(authority),
+      proposals,
+      confirmationTitle,
+    })
+  }
+  const disableElevatedOffice = () => {
+    if (!elevated) return
+    elevated = undefined
+    proposals.logout()
+  }
   const lifecycleRuntime = lifecycle(
-    skill,
+    dynamicSkill,
     proposals,
     vfs,
     skills,
@@ -1918,6 +2036,9 @@ export function createOfficeHostRuntime(
           animationFrameAvailable: () => Boolean(options.presentation?.animationFrameAvailable?.()),
         }
       : undefined,
+    enableElevatedOffice,
+    disableElevatedOffice,
+    setPowerPointImageFetchAvailable,
   )
   return {
     ...lifecycleRuntime,
@@ -1965,6 +2086,10 @@ function lifecycle(
     revokeLicense(imageId: string): Promise<unknown>
     extractFirstFrame(imageId: string): Promise<unknown>
   },
+  enableElevatedOffice: OfficeHostRuntime['enableElevatedOffice'] = () => undefined,
+  disableElevatedOffice: OfficeHostRuntime['disableElevatedOffice'] = () => undefined,
+  setPowerPointImageFetchAvailable: OfficeHostRuntime['setPowerPointImageFetchAvailable'] = () =>
+    undefined,
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
   let epoch = 0
@@ -2018,6 +2143,9 @@ function lifecycle(
         throw new Error('presentation_assets_unavailable')
       await attachments.extractFirstFrame(imageId)
     },
+    enableElevatedOffice,
+    disableElevatedOffice,
+    setPowerPointImageFetchAvailable,
     async uploadFile(name, content) {
       if (disposed) throw new Error('upload_cancelled')
       if (
@@ -2059,6 +2187,7 @@ function lifecycle(
     clearSession,
     dispose() {
       clearSession()
+      proposals.destroyDocumentContext()
       disposed = true
     },
   }

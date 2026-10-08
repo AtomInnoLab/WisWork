@@ -17,11 +17,32 @@ function makeAccess(slides: RenderSlide[] = []): DeckAccess {
     getSelectedIds: () => [],
     applySlide: () => {},
     applyDeck: () => {},
+    executePresentationOperation: async (request) => ({
+      receipt: {
+        status: 'applied',
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 'operations' in request ? request.operations.length : 1,
+        createdIds: ['{11111111-2222-3333-4444-555555555555}'],
+      },
+      authoritativeState: 'fresh',
+    }),
     fitWidthPx: 1280,
   }
 }
 
 describe('unsupported cloud features', () => {
+  it('removes production presentation hooks when verified completion is rolled back', () => {
+    const access = { ...makeAccess(), taskReviewAdapter: {} as DeckAccess['taskReviewAdapter'] }
+    const skill = createSlidesSkill(access, {
+      planning: true,
+      verifiedCompletion: false,
+      visualReview: true,
+      autoCorrection: false,
+    })
+    expect(skill.presentation).toBeUndefined()
+  })
+
   it('does not advertise or prompt for disabled cloud tools', () => {
     const skill = createSlidesSkill(makeAccess())
     const names = skill.tools.map((tool) => tool.name)
@@ -44,7 +65,18 @@ describe('unsupported cloud features', () => {
       input: {
         core_hook: 'Hook',
         style: 'Style',
-        pages: [{ title: 'One', brief: 'Brief', layout: 'title' }],
+        pages: [
+          {
+            title: 'One',
+            brief: 'Brief',
+            layout: 'title',
+            purpose: 'Open',
+            visual: 'Hero title',
+            acceptance: ['Clear hierarchy'],
+            density: 'low',
+          },
+        ],
+        prototype_pages: [0],
       },
     } as AgentToolCall)
     expect(result.isError).toBeUndefined()
@@ -61,7 +93,8 @@ describe('unsupported cloud features', () => {
           paragraphs: [{ text }],
         },
       } as AgentToolCall)
-      expect(addition.isError).toBeUndefined()
+      expect(addition).toMatchObject({ isError: true, mutated: false })
+      expect(addition.output).toContain('ready structured contract with plan_deck')
     }
     const contexts = [skill.buildContext?.() ?? '', skill.buildContext?.() ?? '']
     for (const context of contexts) {

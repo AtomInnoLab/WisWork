@@ -16,16 +16,35 @@ export async function* sseLines(
   let buffer = ''
   const stream = body as ReadableStream<Uint8Array>
   const reader = stream.getReader()
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    onBytes?.()
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) yield line
+  let completed = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        completed = true
+        break
+      }
+      onBytes?.()
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) yield line
+    }
+    if (buffer) yield buffer
+  } finally {
+    if (!completed) {
+      try {
+        await reader.cancel()
+      } catch {
+        // Preserve the stream or consumer error that caused cleanup.
+      }
+    }
+    try {
+      reader.releaseLock()
+    } catch {
+      // Cleanup must not mask the primary stream result.
+    }
   }
-  if (buffer) yield buffer
 }
 
 export interface StreamCallbacks {

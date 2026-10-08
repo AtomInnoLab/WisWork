@@ -20,6 +20,46 @@ function document(selection = 'before') {
 }
 
 describe('proposal controller', () => {
+  it('quarantines writes until the matching generation proves stable', () => {
+    const controller = createStructuredProposalController()
+    const request = {
+      operation: 'edit',
+      title: 'Edit document',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => undefined,
+    }
+    const lease = controller.quarantine({ sessionId: 'session-a', generation: 1 })
+
+    expect(controller.isQuarantined()).toBe(true)
+    expect(() => controller.propose(request)).toThrow('office_state_uncertain')
+    controller.newTurn()
+    expect(() => controller.propose(request)).toThrow('office_state_uncertain')
+    controller.resolveQuarantine(lease, { stable: true })
+    expect(controller.isQuarantined()).toBe(false)
+    expect(controller.propose(request)).toBeDefined()
+  })
+
+  it('does not let an old reconciliation clear a replacement session quarantine', () => {
+    const controller = createStructuredProposalController()
+    const oldLease = controller.quarantine({ sessionId: 'session-a', generation: 1 })
+    controller.logout()
+    expect(controller.isQuarantined()).toBe(true)
+    controller.resolveQuarantine(oldLease, { stable: false })
+    expect(controller.isQuarantined()).toBe(true)
+
+    controller.destroyDocumentContext()
+    expect(controller.isQuarantined()).toBe(false)
+
+    const currentLease = controller.quarantine({ sessionId: 'session-b', generation: 2 })
+    controller.resolveQuarantine(oldLease, { stable: true })
+    expect(controller.isQuarantined()).toBe(true)
+    controller.resolveQuarantine(currentLease, { stable: false })
+    expect(controller.isQuarantined()).toBe(true)
+  })
+
   it('publishes proposal lifecycle changes and exposes the eventual user decision', async () => {
     const controller = createStructuredProposalController()
     const snapshots: Array<string | undefined> = []
@@ -105,6 +145,30 @@ describe('proposal controller', () => {
       error: expect.objectContaining({ message: expect.stringContaining('alice') }),
       durationMs: expect.any(Number),
     })
+  })
+
+  it.each([
+    'https://private.example/token',
+    '/Users/alice/private.docx',
+    'PowerPoint.operations.0.set_shape_text_style.secret',
+    'PowerPoint.operations.1234.set_shape_text_style.fontFamily',
+  ])('does not forward an unrecognized verification location: %s', async (errorLocation) => {
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose({
+      operation: 'execute_office_js',
+      title: 'Edit',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide'], count: 1 },
+      fingerprint: 'v1',
+      validate: () => true,
+      execute: () => undefined,
+      verify: () => {
+        throw Object.assign(new Error('office_verify_failed'), { debugInfo: { errorLocation } })
+      },
+    })
+    const decision = controller.waitForDecision(proposal.id)
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('office_verify_failed')
+    expect(await decision).toEqual({ status: 'failed', error: 'office_verify_failed' })
   })
 
   it('diagnoses validation and verification at their exact safe phases', async () => {
@@ -408,10 +472,12 @@ describe('proposal controller', () => {
           }),
         execute,
       })
+      const decision = controller.waitForDecision(proposal.id)
       const confirmation = controller.confirm(proposal.id)
       controller[invalidate]()
       finishValidation(true)
-      await expect(confirmation).rejects.toThrow('proposal_stale')
+      await expect(confirmation).resolves.toBeUndefined()
+      await expect(decision).resolves.toEqual({ status: 'cancelled' })
       expect(execute).not.toHaveBeenCalled()
     },
   )

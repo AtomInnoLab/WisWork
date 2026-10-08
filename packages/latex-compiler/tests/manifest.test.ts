@@ -87,6 +87,16 @@ describe('parseTectonicManifest', () => {
     expect(() => parseTectonicManifest(value)).toThrow(/unknown fields/i)
   })
 
+  it.each([
+    ['tar.gz', 'tectonic.exe'],
+    ['zip', 'tectonic'],
+    ['rar', 'tectonic.exe'],
+  ])('rejects the unapproved archive layout %s/%s', (format, executable) => {
+    const value = validManifest()
+    value.tectonic.assets[0]!.archive = { format, executable }
+    expect(() => parseTectonicManifest(value)).toThrow(/archive layout/i)
+  })
+
   it('accepts the checked-in manifest with exact reviewed asset identities', async () => {
     const manifestUrl = new URL('../../../tools/tectonic/manifest.json', import.meta.url)
     const parsed = parseTectonicManifest(JSON.parse(await readFile(manifestUrl, 'utf8')))
@@ -94,6 +104,7 @@ describe('parseTectonicManifest', () => {
     expect(parsed.tectonic.assets.map((asset) => asset.platform)).toEqual([
       'darwin-arm64',
       'darwin-x64',
+      'win32-x64',
     ])
     expect(parsed.bundle).toMatchObject({
       bytes: 2_881_562_112,

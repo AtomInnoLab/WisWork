@@ -2,7 +2,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readAppSettings, writeAppSetting } from '../src/main/app-settings'
+import {
+  readAppSettings,
+  readRequestedAgentRuntime,
+  writeAppSetting,
+  writeRequestedAgentRuntime,
+} from '../src/main/app-settings'
 
 /**
  * userData/app-settings.json helpers (src/main/app-settings.ts): a flat JSON
@@ -15,6 +20,21 @@ let settingsPath: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'app-settings-'))
   settingsPath = join(dir, 'app-settings.json')
+})
+
+describe('agent runtime selection', () => {
+  it('defaults invalid and absent values to Standard and migrates the prior key read-only', () => {
+    expect(readRequestedAgentRuntime(settingsPath)).toBe('standard')
+    writeFileSync(settingsPath, JSON.stringify({ requestedAgentRuntime: 'attack' }))
+    expect(readRequestedAgentRuntime(settingsPath)).toBe('standard')
+    writeFileSync(settingsPath, JSON.stringify({ agentRuntime: 'enhanced' }))
+    expect(readRequestedAgentRuntime(settingsPath)).toBe('enhanced')
+  })
+
+  it('persists the requested runtime without changing an active process value', () => {
+    writeRequestedAgentRuntime(settingsPath, 'enhanced')
+    expect(readAppSettings(settingsPath)).toEqual({ requestedAgentRuntime: 'enhanced' })
+  })
 })
 
 afterEach(() => {

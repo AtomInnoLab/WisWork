@@ -78,8 +78,25 @@ import type {
   SlidesApi,
   UiTheme,
 } from '../shared/ipc'
+import type { PresentationTransaction } from '@wiswork/presentation-ops'
+import { createPcHostCodexApi } from '@wiswork/agent-runtime'
 
 const api: SlidesApi = {
+  verifyAcceptanceTextProof: (request) =>
+    ipcRenderer.invoke('slides:acceptance-text-proof-verify', request),
+  getAcceptanceAuthorityLease: () => ipcRenderer.invoke('slides:acceptance-authority-lease'),
+  inspectAcceptanceAuthority: (request) =>
+    ipcRenderer.invoke('slides:acceptance-authority-inspect', request),
+  captureAgentSelection: (request) => ipcRenderer.invoke('slides:agent-selection-capture', request),
+  preparePresentationTarget: (request) =>
+    ipcRenderer.invoke('slides:presentation-target-prepare', request),
+  executePresentationTransaction: (transaction: PresentationTransaction, scopeGuard) =>
+    ipcRenderer.invoke(
+      'slides:presentation-transaction',
+      scopeGuard ? { transaction, scopeGuard } : transaction,
+    ),
+  cancelPresentationTransaction: (transactionId: string) =>
+    ipcRenderer.invoke('slides:presentation-transaction-cancel', transactionId),
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
   onLanguageChanged: (handler) => {
     const listener = (
@@ -127,6 +144,8 @@ const api: SlidesApi = {
   batchEditTransform: (op: BatchEditTransformOp) =>
     ipcRenderer.invoke('slides:batch-edit-transform', op),
   getRenderSlides: () => ipcRenderer.invoke('slides:get-render-slides'),
+  getQualityIdentityMap: (slideIndex: number) =>
+    ipcRenderer.invoke('slides:get-quality-identity-map', slideIndex),
   addElement: (op: AddElementOp) => ipcRenderer.invoke('slides:add-element', op),
   deleteElement: (op: DeleteElementOp) => ipcRenderer.invoke('slides:delete-element', op),
   addSlide: (op: AddSlideOp) => ipcRenderer.invoke('slides:add-slide', op),
@@ -293,8 +312,18 @@ const api: SlidesApi = {
     ipcRenderer.on('ai:stream-chunk', listener)
     return () => ipcRenderer.removeListener('ai:stream-chunk', listener)
   },
-  saveStyleSidecar: (data: { topic: string; styleSkill: string; createdAt: string }) =>
-    ipcRenderer.invoke('ai:save-sidecar', data),
+  saveStyleSidecar: (data: {
+    topic: string
+    styleSkill: string
+    designMd?: string
+    createdAt: string
+  }) => ipcRenderer.invoke('ai:save-sidecar', data),
+  getDesignSidecar: () => ipcRenderer.invoke('ai:get-design-sidecar'),
+  openDesignSidecar: () => ipcRenderer.invoke('ai:open-design-sidecar'),
+  onDesignSidecarChanged: (handler: () => void) => {
+    ipcRenderer.on('ai:design-sidecar-changed', handler)
+    return () => ipcRenderer.removeListener('ai:design-sidecar-changed', handler)
+  },
   saveStyleTemplate: (
     name: string,
     data: { topic: string; styleSkill: string; createdAt: string },
@@ -326,6 +355,7 @@ const api: SlidesApi = {
 }
 
 contextBridge.exposeInMainWorld('slidesApi', api)
+contextBridge.exposeInMainWorld('codexRuntime', createPcHostCodexApi(ipcRenderer))
 
 // Chat attachment bridge: method names/signatures match the window.desktop attachment subset in docs, so the renderer's files-skill is copied over wholesale
 const filesApi: DesktopFilesApi = {

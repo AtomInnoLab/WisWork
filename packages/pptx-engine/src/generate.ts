@@ -18,6 +18,7 @@
  */
 import type { SlideElement, TextElement, Paragraph, TextRun, Transform, PPrDirty } from './types'
 import { escapeXmlText, escapeXmlAttr } from './xml-utils'
+import { locatePresentationBackground } from './presentation-xml'
 
 /**
  * In-place patch of a text/shape element's original XML.
@@ -1097,19 +1098,17 @@ export function patchPictureSrcRect(
  * slide.bodyPrefix and flags a rebuild).
  */
 export function patchSlideBackgroundXml(bodyPrefix: string, color: string): string {
-  const bgXml = `<p:bg><p:bgPr><a:solidFill><a:srgbClr val="${hex6(color)}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>`
-  const existing = /<p:bg>[\s\S]*?<\/p:bg>|<p:bg\s[^>]*\/>/.exec(bodyPrefix)
-  if (existing) {
-    return (
-      bodyPrefix.slice(0, existing.index) +
-      bgXml +
-      bodyPrefix.slice(existing.index + existing[0].length)
-    )
+  const location = locatePresentationBackground(bodyPrefix)
+  const p = location.presentationPrefix ? `${location.presentationPrefix}:` : ''
+  const a = `${location.drawingPrefix}:`
+  const bgXml = `<${p}bg${location.presentationDeclaration ?? ''}${location.drawingDeclaration ?? ''}><${p}bgPr><${a}solidFill><${a}srgbClr val="${hex6(color)}"/></${a}solidFill><${a}effectLst/></${p}bgPr></${p}bg>`
+  if (location.backgroundRange) {
+    const [start, end] = location.backgroundRange
+    return bodyPrefix.slice(0, start) + bgXml + bodyPrefix.slice(end)
   }
-  const cSld = /<p:cSld(\s[^>]*)?>/.exec(bodyPrefix)
-  if (!cSld) return bodyPrefix
-  const at = cSld.index + cSld[0].length
-  return bodyPrefix.slice(0, at) + bgXml + bodyPrefix.slice(at)
+  return (
+    bodyPrefix.slice(0, location.cSldInsertAt) + bgXml + bodyPrefix.slice(location.cSldInsertAt)
+  )
 }
 
 // ── Slide transition patch ──────────────────────────────────────────────

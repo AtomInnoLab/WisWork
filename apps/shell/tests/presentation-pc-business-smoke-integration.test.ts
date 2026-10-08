@@ -55,7 +55,6 @@ async function businessSmoke(realRelay = false) {
     ).toString('utf8'),
   )
   expect(compiled.status).toBe('compiled')
-  let client
   let origin: string
   if (realRelay) {
     const child = spawn(
@@ -194,7 +193,7 @@ async function businessSmoke(realRelay = false) {
     origin = `http://127.0.0.1:${server.address().port}`
   }
   const endpoint = `${origin.replace('http:', 'ws:')}/office-relay`
-  client = createOfficeRelayClient({
+  const client = createOfficeRelayClient({
     endpoint,
     connect: (_url, token) =>
       new WebSocket(endpoint, { headers: { Authorization: `Bearer ${token}` } }),

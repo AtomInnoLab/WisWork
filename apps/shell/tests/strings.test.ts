@@ -28,6 +28,20 @@ describe('home-screen locale tables', () => {
     expect(locales.length).toBeGreaterThanOrEqual(19)
   })
 
+  it('localizes the safe project-operation failure message', () => {
+    const zh = strings.zh as Record<string, string>
+    const en = strings.en as Record<string, string>
+
+    expect(zh.projectOperationFailed).toBe('项目操作失败，请重试。')
+    expect(en.projectOperationFailed).toBe('Project operation failed. Try again.')
+    expect(
+      locales.every(
+        (locale) =>
+          typeof (strings[locale] as Record<string, string>).projectOperationFailed === 'string',
+      ),
+    ).toBe(true)
+  })
+
   it.each(locales)('locale %s has exactly the zh key set', (locale) => {
     expect(Object.keys(strings[locale]).sort()).toEqual(referenceKeys)
   })

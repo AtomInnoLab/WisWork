@@ -19,6 +19,7 @@ import type {
   Transform,
 } from './types'
 import { patchSlideBackgroundXml } from './generate'
+import { locatePresentationBackground } from './presentation-xml'
 import { elementSpid } from './animation'
 
 const EMU_PER_PX = 9525
@@ -50,6 +51,36 @@ function strokeInvisible(stroke: Stroke | undefined): boolean {
 
 function hasVisibleText(el: TextElement): boolean {
   return !!el.text?.paragraphs.some((p) => p.runs.some((r) => r.text.trim() !== ''))
+}
+
+/** Whether the slide part itself contains a local background override (not layout/master inheritance). */
+export function hasExplicitSlideBackground(slide: Slide): boolean {
+  return locatePresentationBackground(slide.bodyPrefix).backgroundRange !== undefined
+}
+
+/**
+ * Preserve the editor's established background-tool behavior for template backdrops.
+ * This intentionally matches the legacy IPC's loose 5% full-bleed test exactly.
+ */
+export function recolorFullBleedBackdrops(slide: Slide, size: SlideSize, color: string): number {
+  let changed = 0
+  for (const element of slide.elements) {
+    if (element.type !== 'shape' && element.type !== 'text') continue
+    const shaped = element as TextElement
+    const fill = shaped.fill
+    const fillType = fill?.type
+    if (fillType !== 'solid' && fillType !== 'gradient') continue
+    if (hasVisibleText(shaped)) continue
+    const { x, y, cx, cy } = element.transform.offset
+    const coversX = x <= size.cx * 0.05 && x + cx >= size.cx * 0.95
+    const coversY = y <= size.cy * 0.05 && y + cy >= size.cy * 0.95
+    if (!coversX || !coversY) continue
+    if (fill?.type === 'solid' && fill.color === color) continue
+    shaped.fill = { type: 'solid', color }
+    shaped.dirtyFill = true
+    changed += 1
+  }
+  return changed
 }
 
 /**

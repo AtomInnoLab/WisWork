@@ -170,7 +170,9 @@ response body. No model service key is required.
 Features formerly supplied by the removed
 cloud runtime—image generation, media analysis, cloud slide generation, and cloud PDF conversion—are
 unavailable and return `unsupported_feature`; web/image search retains its documented
-Serper/DuckDuckGo paths.
+SerpApi/Serper/DuckDuckGo paths. Google Images through SerpApi uses the main-process-only
+`SERPAPI_API_KEY`; the older Serper integration continues to use `SERPER_API_KEY`. These names are
+not interchangeable, and neither credential is exposed to renderers or diagnostics.
 
 Before accepting a real integration build, verify all of the following without recording tokens:
 

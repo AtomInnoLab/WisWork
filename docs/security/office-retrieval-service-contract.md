@@ -20,3 +20,10 @@ does **not** claim to enforce DNS-level SSRF protection. The fixed retrieval ser
 Deployment order is Relay v2, PC with explicit `pc.negotiate`, the attested retrieval service, then
 Office v2 capability enablement. Older Office v1 pairings remain usable because PC obtains the
 pairing version from Relay before sending `pc.claim`; it never guesses or silently downgrades.
+
+Office image bytes use the compile-fixed authenticated endpoint
+`https://office.8-216-134-194.sslip.io/office-image-fetch`. The PC sends only a previously searched
+original or same-result fallback URL, rejects redirects, non-200 responses, non-PNG/JPEG MIME, and
+declared or streamed bodies above 10 MiB. Remote fetch, strict pinned local rescue, and the fallback
+rendition share one 15-second request budget; caller cancellation and semantic MIME/size failures do
+not trigger local rescue.

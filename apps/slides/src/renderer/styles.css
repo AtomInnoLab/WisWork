@@ -1366,6 +1366,8 @@ body.vib .slide-list {
 
 .ai-panel {
   position: relative;
+  min-height: 0;
+  overflow: hidden;
   width: 360px;
   flex-shrink: 0;
   display: flex;
@@ -1446,6 +1448,103 @@ body.vib .slide-list {
   padding: 0 7px;
   font: inherit;
   font-size: 12px;
+}
+
+.ai-header-btn.ai-design-header-btn {
+  width: auto;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ai-design-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 18px;
+  background: rgb(0 0 0 / 52%);
+}
+
+.ai-design-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(620px, 100%);
+  max-height: calc(100% - 36px);
+  height: min(720px, calc(100% - 36px));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 35%);
+}
+
+.ai-design-dialog header,
+.ai-design-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-design-dialog p,
+.ai-design-notice {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.ai-design-dialog textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--color-bg-page);
+  color: var(--text);
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.ai-design-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.ai-design-dialog footer {
+  justify-content: flex-end;
+}
+
+.ai-design-dialog footer button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--color-bg-subtle);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ai-design-dialog footer button.primary {
+  border-color: #232425;
+  background: #232425;
+  color: #fff;
 }
 
 .ai-header-btn:disabled {
@@ -1641,12 +1740,7 @@ body.vib .slide-list {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  margin-top: 12px;
-}
-
-.ai-msg-assistant .ai-work-group:first-child,
-.ai-work-group:only-child {
-  margin-top: 0;
+  margin: 0;
 }
 
 .ai-work-group-summary {
@@ -2642,6 +2736,11 @@ body.vib .slide-list {
   transition: all var(--transition-fast);
 }
 
+.ai-send-btn:not(.ai-stop-btn) {
+  color: var(--color-btn-primary-text);
+  background: var(--color-btn-primary);
+}
+
 .ai-send-btn img {
   display: block;
   width: 100%;
@@ -2659,6 +2758,7 @@ body.vib .slide-list {
 
 .ai-send-btn:disabled {
   cursor: default;
+  opacity: 0.55;
 }
 
 /* Stop button while generating: brand-supplied art (white square on black), transparent button chrome */

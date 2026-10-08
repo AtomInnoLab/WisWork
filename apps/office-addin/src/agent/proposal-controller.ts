@@ -1,5 +1,5 @@
 import type { OfficeDocumentClient } from '../office-document.js'
-import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
+import { officeIdentifiers, type OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import { validatePowerPointPageScreenshot } from '../skills/powerpoint/browser-powerpoint-adapter.js'
 
 export type ProposalOperation = 'replace' | 'append'
@@ -45,6 +45,13 @@ export type PresentationLockReview =
     }
 
 export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id' | 'lockReview'> {
+  /** Host-owned scope; never copied from model input or exposed in the proposal UI. */
+  powerPointMutation?: { indexes: number[]; scaffold: boolean }
+  verificationBinding?: {
+    callId: string
+    fingerprint: string
+    targets: string[]
+  }
   validate(signal?: AbortSignal): boolean | Promise<boolean>
   execute(signal?: AbortSignal): void | Promise<void>
   verify?(signal?: AbortSignal): void | Promise<void>
@@ -53,10 +60,16 @@ export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'
 
 export type ProposalDecision =
   | { status: 'confirmed'; postWrite?: ProposalPostWriteEvidence }
+  | {
+      status: 'applied_unverified'
+      historyId?: string
+      safeCode?: 'office_write_pending'
+    }
   | { status: 'rejected' | 'cancelled' }
-  | { status: 'failed'; error: string }
+  | { status: 'failed'; error: string; errorLocation?: string }
 
 interface ProposalDecisionLifecycle {
+  id: string
   promise: Promise<ProposalDecision>
   resolve(value: ProposalDecision): void
   settled: boolean
@@ -80,7 +93,42 @@ export interface StructuredProposalController {
   reject(): void
   newTurn(): void
   logout(): void
+  destroyDocumentContext(): void
+  isQuarantined(): boolean
+  quarantine(scope: ProposalQuarantineScope): ProposalQuarantineLease
+  resolveQuarantine(lease: ProposalQuarantineLease, result: { stable: boolean }): void
+  subscribeAudit?(listener: (event: StructuredProposalAuditEvent) => void): () => void
 }
+
+export interface ProposalQuarantineScope {
+  sessionId: string
+  generation: number
+}
+
+export interface ProposalQuarantineLease {
+  readonly scope: Readonly<ProposalQuarantineScope>
+  readonly token: symbol
+}
+
+export type StructuredProposalAuditEvent =
+  | {
+      kind: 'proposed'
+      id: string
+      toolName?: string
+      fingerprint: string
+      targets: string[]
+      verificationBinding?: { callId: string; fingerprint: string; targets: string[] }
+      powerPointMutation?: { indexes: number[]; scaffold: boolean }
+    }
+  | {
+      kind: 'settled'
+      id: string
+      status: ProposalDecision['status']
+      error?: string
+      safeCode?: 'office_write_pending'
+    }
+  | { kind: 'quarantined'; generation: number }
+  | { kind: 'quarantine_cleared'; generation: number }
 
 export interface OfficeProposal {
   id: string
@@ -99,6 +147,7 @@ export interface ProposalController {
   reject(): void
   newTurn(): void
   logout(): void
+  destroyDocumentContext(): void
 }
 
 function invalidProposal(): never {
@@ -118,6 +167,8 @@ const PROPOSAL_ERROR_CODES = new Set([
   'presentation_lock_review_pending',
   'presentation_lock_review_unavailable',
   'presentation_lock_review_stale',
+  'office_applied_unverified',
+  'office_write_pending',
 ])
 
 function stableProposalError(error: unknown): string {
@@ -211,13 +262,16 @@ export function createStructuredProposalController(
       }
     | undefined
   let confirming: AbortController | undefined
+  let quarantine: ProposalQuarantineLease | undefined
   const listeners = new Set<() => void>()
+  const auditListeners = new Set<(event: StructuredProposalAuditEvent) => void>()
   const snapshot = (value: StructuredProposal) => deepFreeze(boundedCopy(value))
   const publish = () => listeners.forEach((listener) => listener())
   const settle = (decision: ProposalDecisionLifecycle, value: ProposalDecision) => {
     if (decision.settled) return
     decision.settled = true
     decision.resolve(value)
+    auditListeners.forEach((listener) => listener({ kind: 'settled', id: decision.id, ...value }))
   }
   const invalidate = (status: 'rejected' | 'cancelled') => {
     current?.reviewController?.abort()
@@ -238,6 +292,7 @@ export function createStructuredProposalController(
       return current.decision.promise
     },
     propose(request) {
+      if (quarantine) throw new Error('office_state_uncertain')
       if (confirming) throw new Error('proposal_confirmation_in_progress')
       if (
         !request.operation ||
@@ -253,7 +308,24 @@ export function createStructuredProposalController(
         request.impact.host.length > 32 ||
         !Number.isSafeInteger(request.impact.count) ||
         request.impact.count < 0 ||
-        request.impact.targets.some((target) => !target || target.length > 512)
+        request.impact.targets.some((target) => !target || target.length > 512) ||
+        (request.verificationBinding !== undefined &&
+          (!request.verificationBinding.callId ||
+            request.verificationBinding.callId.length > 128 ||
+            !request.verificationBinding.fingerprint ||
+            request.verificationBinding.fingerprint.length > 128 ||
+            request.verificationBinding.targets.length > 256 ||
+            request.verificationBinding.targets.some((target) => !target || target.length > 512)))
+      )
+        invalidProposal()
+      if (
+        request.powerPointMutation &&
+        (!Array.isArray(request.powerPointMutation.indexes) ||
+          request.powerPointMutation.indexes.length > 1_000 ||
+          request.powerPointMutation.indexes.some(
+            (index) => !Number.isSafeInteger(index) || index < 0 || index > 100_000,
+          ) ||
+          typeof request.powerPointMutation.scaffold !== 'boolean')
       )
         invalidProposal()
       const publicValue = snapshot({
@@ -283,7 +355,7 @@ export function createStructuredProposalController(
       current = {
         snapshot: publicValue,
         request: { ...request },
-        decision: { promise, resolve, settled: false },
+        decision: { id: publicValue.id, promise, resolve, settled: false },
       }
       if (hooks?.review) {
         const pending = current
@@ -306,6 +378,31 @@ export function createStructuredProposalController(
             publish()
           })
       }
+      auditListeners.forEach((listener) =>
+        listener({
+          kind: 'proposed',
+          id: publicValue.id,
+          ...(publicValue.toolName ? { toolName: publicValue.toolName } : {}),
+          fingerprint: publicValue.fingerprint,
+          targets: [...publicValue.impact.targets],
+          ...(request.powerPointMutation
+            ? {
+                powerPointMutation: {
+                  indexes: [...request.powerPointMutation.indexes],
+                  scaffold: request.powerPointMutation.scaffold,
+                },
+              }
+            : {}),
+          ...(request.verificationBinding
+            ? {
+                verificationBinding: {
+                  ...request.verificationBinding,
+                  targets: [...request.verificationBinding.targets],
+                },
+              }
+            : {}),
+        }),
+      )
       publish()
       return snapshot(publicValue)
     },
@@ -317,6 +414,12 @@ export function createStructuredProposalController(
         throw new Error('presentation_lock_review_pending')
       if (proposal.snapshot.lockReview?.state === 'unavailable')
         throw new Error('presentation_lock_review_unavailable')
+      if (quarantine) {
+        current = undefined
+        publish()
+        settle(proposal.decision, { status: 'failed', error: 'office_state_uncertain' })
+        throw new Error('office_state_uncertain')
+      }
       current = undefined
       publish()
       const controller = new AbortController()
@@ -374,6 +477,10 @@ export function createStructuredProposalController(
         )
       } catch (error) {
         const code = stableProposalError(error)
+        if (phase === 'validate' && controller.signal.aborted) {
+          settle(proposal.decision, { status: 'cancelled' })
+          return
+        }
         diagnose(() =>
           diagnostics?.record({
             phase: code.startsWith('office_recovery_failed') ? 'recovery' : phase,
@@ -382,15 +489,82 @@ export function createStructuredProposalController(
             durationMs: Math.max(0, Date.now() - phaseStartedAt),
           }),
         )
-        settle(proposal.decision, { status: 'failed', error: code })
-        throw error
+        if (code === 'office_applied_unverified' || code === 'office_write_pending') {
+          settle(proposal.decision, {
+            status: 'applied_unverified',
+            ...(code === 'office_write_pending' ? { safeCode: code } : {}),
+          })
+        } else {
+          const location =
+            code === 'office_verify_failed'
+              ? officeIdentifiers(error).office_error_location
+              : undefined
+          // Forward only our declarative verifier's bounded coordinates, never native messages.
+          const errorLocation =
+            location &&
+            /^PowerPoint\.operations\.\d{1,3}\.(?:set_shape_text|set_shape_text_style|set_shape_geometry|add_text_box|delete_shape)\.(?:color|fontFamily|fontSize|bold|italic|text|left|top|width|height|shape_id|exists|readback)$/.test(
+              location,
+            )
+              ? location
+              : undefined
+          settle(proposal.decision, {
+            status: 'failed',
+            error: code,
+            ...(errorLocation ? { errorLocation } : {}),
+          })
+          throw error
+        }
       } finally {
         if (confirming === controller) confirming = undefined
       }
     },
     reject: () => invalidate('rejected'),
     newTurn: () => invalidate('cancelled'),
-    logout: () => invalidate('cancelled'),
+    logout: () => {
+      invalidate('cancelled')
+    },
+    destroyDocumentContext: () => {
+      invalidate('cancelled')
+      quarantine = undefined
+    },
+    isQuarantined: () => quarantine !== undefined,
+    quarantine(scope) {
+      if (
+        !scope.sessionId ||
+        scope.sessionId.length > 256 ||
+        !Number.isSafeInteger(scope.generation) ||
+        scope.generation < 0
+      )
+        throw new Error('office_state_uncertain')
+      const lease = Object.freeze({
+        scope: Object.freeze({ ...scope }),
+        token: Symbol('office-quarantine'),
+      })
+      quarantine = lease
+      auditListeners.forEach((listener) =>
+        listener({ kind: 'quarantined', generation: scope.generation }),
+      )
+      diagnose(() =>
+        diagnostics?.record({
+          phase: 'recovery',
+          errorCode: 'office_state_uncertain',
+          durationMs: 0,
+        }),
+      )
+      return lease
+    },
+    resolveQuarantine(lease, result) {
+      if (quarantine !== lease || !result.stable) return
+      quarantine = undefined
+      auditListeners.forEach((listener) =>
+        listener({ kind: 'quarantine_cleared', generation: lease.scope.generation }),
+      )
+      publish()
+    },
+    subscribeAudit(listener) {
+      auditListeners.add(listener)
+      return () => auditListeners.delete(listener)
+    },
   }
 }
 
@@ -466,5 +640,6 @@ export function createProposalController(
     reject: structured.reject,
     newTurn: structured.newTurn,
     logout: structured.logout,
+    destroyDocumentContext: structured.destroyDocumentContext,
   }
 }

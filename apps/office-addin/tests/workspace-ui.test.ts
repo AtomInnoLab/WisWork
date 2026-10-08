@@ -13,10 +13,17 @@ import {
   createOfficeWorkspaceUi,
   focusWorkspacePanel,
   isTimelineNearBottom,
+  presentationDesignLifecycle,
   type OfficeWorkspaceUi,
   type WorkspacePanelName,
 } from '../src/App.js'
-import type { OfficeAgentSession, OfficeAgentSnapshot } from '../src/agent/use-office-agent.js'
+import {
+  createOfficeAgentSession,
+  type OfficeAgentSession,
+  type OfficeAgentSnapshot,
+} from '../src/agent/use-office-agent.js'
+import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
+import type { OfficeToolActivity } from '../src/agent/transport.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 import { createOfficeDiagnostics } from '../src/diagnostics/office-diagnostics.js'
 import type { PresentationQaAttempt } from '../src/skills/powerpoint/presentation-qa-attempts.js'
@@ -33,6 +40,8 @@ function workspaceMarkup(
   overrides: Partial<OfficeAgentSnapshot> = {},
   panel?: WorkspacePanelName,
   host: 'word' | 'excel' | 'powerpoint' | 'unknown' = 'word',
+  connectionNotice?: string,
+  runtimeMode: 'standard' | 'enhanced' = 'standard',
 ) {
   const snapshot: OfficeAgentSnapshot = {
     assistantText: 'Draft ready',
@@ -90,6 +99,8 @@ function workspaceMarkup(
       disconnect: vi.fn(),
       host,
       initialPanel: panel,
+      connectionNotice,
+      runtimeMode,
     }),
   )
 }
@@ -394,6 +405,82 @@ describe('Office Agent workspace UI', () => {
     expect(workspaceMarkup({}, undefined, 'unknown')).toContain('WisWork AI')
   })
 
+  it('uses the desktop Slides conversation hierarchy for PowerPoint', () => {
+    const html = workspaceMarkup({}, undefined, 'powerpoint')
+    expect(html).toContain('class="agent-workspace presentation-agent')
+    expect(html).toContain('class="ai-msg ai-msg-user"')
+    expect(html).toContain('class="ai-msg ai-msg-assistant"')
+    expect(html).toContain('class="ai-work-group"')
+    expect(html).toContain('已完成 · 1 个步骤')
+    expect(html).not.toContain('class="tool-event')
+    expect(html).not.toContain('message-role')
+    expect(html).not.toContain('class="agent-status"')
+  })
+
+  it('shows the desktop Slides working indicator and descriptive search step', () => {
+    const html = workspaceMarkup(
+      {
+        busy: true,
+        status: 'working',
+        activity: '图片搜索',
+        timeline: Object.freeze([
+          {
+            id: 'search-1',
+            kind: 'tool' as const,
+            callId: 'call-search-1',
+            name: 'image_search',
+            summary: '图片搜索',
+            state: 'running' as const,
+          },
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('图片搜索')
+    expect(html).not.toContain('aria-label="继续处理中"')
+  })
+
+  it('keeps completed PowerPoint tool output available as expandable detail', () => {
+    const html = workspaceMarkup(
+      {
+        timeline: Object.freeze([
+          {
+            id: 'search-1',
+            kind: 'tool' as const,
+            callId: 'call-search-1',
+            name: 'image_search',
+            summary: '图片搜索完成',
+            state: 'complete' as const,
+            output: '{"images":[{"title":"LLM"}]}',
+          },
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('class="ai-step-title clickable"')
+    expect(html).toContain('aria-expanded="false"')
+  })
+
+  it('uses the desktop Slides generation empty state for PowerPoint', () => {
+    const html = workspaceMarkup(
+      {
+        assistantText: '',
+        status: 'idle',
+        proposal: undefined,
+        timeline: Object.freeze([]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('让 AI 为你生成演示文稿')
+    expect(html).toContain('描述主题、场合和大致页数')
+    expect(html).toContain('起草一份项目汇报')
+    expect(html).toContain('class="ai-starter"')
+    expect(html).not.toContain('让 AI 帮你从零起草')
+  })
+
   it('keeps the rollback workspace compact without the legacy explanatory masthead', () => {
     const snapshot = {
       assistantText: '',
@@ -456,6 +543,142 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('class="app-header"')
   })
 
+  it('shows uninterrupted ordinary editing for PowerPoint while keeping elevated review implicit', () => {
+    const html = workspaceMarkup(
+      {
+        assistantText: '',
+        status: 'idle',
+        proposal: undefined,
+        timeline: Object.freeze([]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('自动应用常规更改')
+    expect(html).not.toContain('更改需确认')
+  })
+
+  it('keeps the PowerPoint composer structure stable and opens the native file picker directly', async () => {
+    const snapshot: OfficeAgentSnapshot = {
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'idle',
+      retryable: false,
+      timeline: Object.freeze([]),
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+      dispose: vi.fn(),
+    } satisfies OfficeAgentSession
+    const ui: OfficeWorkspaceUi = Object.freeze({
+      attachments: () => Object.freeze([]),
+      skills: () => Object.freeze([]),
+      skillPackagesEnabled: true,
+      upload: vi.fn(),
+      clear: vi.fn(),
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+        }),
+      )
+    })
+
+    const picker = container.querySelector<HTMLInputElement>('#composer-attachment-upload')!
+    const click = vi.spyOn(picker, 'click')
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Add attachments"]')!.click(),
+    )
+
+    expect(click).toHaveBeenCalledOnce()
+    expect(container.querySelector('.composer-input-box')).not.toBeNull()
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it('does not replace model-authored progress with a generic continuing placeholder', () => {
+    const html = workspaceMarkup(
+      {
+        busy: true,
+        status: 'working',
+        timeline: Object.freeze([
+          Object.freeze({ id: 'u1', kind: 'user' as const, text: '制作 PPT' }),
+          Object.freeze({ id: 'a1', kind: 'assistant' as const, text: '先整理页面结构。' }),
+          Object.freeze({
+            id: 't1',
+            kind: 'tool' as const,
+            callId: 'tool-1',
+            name: 'plan_deck',
+            summary: '规划演示文稿完成',
+            state: 'complete' as const,
+          }),
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('先整理页面结构。')
+    expect(html).not.toContain('继续处理中')
+  })
+
+  it.each([
+    ['draft', 1, 'DESIGN.md · 已创建'],
+    ['ready', 1, 'DESIGN.md · 已锁定'],
+    ['draft', 2, 'DESIGN.md · 已修订'],
+    ['verified', 2, 'DESIGN.md · 已验证'],
+  ])('renders the %s revision lifecycle in the timeline', (status, revision, label) => {
+    const output = JSON.stringify({
+      status,
+      revision,
+      designMd: `# DESIGN.md\n\nStatus: ${status}\nRevision: ${revision}`,
+    })
+    const html = workspaceMarkup(
+      {
+        timeline: Object.freeze([
+          Object.freeze({ id: 'u1', kind: 'user' as const, text: '制作 PPT' }),
+          Object.freeze({
+            id: 't1',
+            kind: 'tool' as const,
+            callId: 'tool-1',
+            name: 'plan_deck',
+            summary: '规划演示文稿完成',
+            state: 'complete' as const,
+            output,
+          }),
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain(label)
+  })
+
+  it('opens only draft and ready design lifecycle states as editable', () => {
+    expect(presentationDesignLifecycle('{"status":"draft","revision":2}')?.editable).toBe(true)
+    expect(presentationDesignLifecycle('{"status":"ready","revision":2}')?.editable).toBe(true)
+    expect(presentationDesignLifecycle('{"status":"producing","revision":2}')?.editable).toBe(false)
+    expect(presentationDesignLifecycle('{"status":"verified","revision":2}')?.editable).toBe(false)
+  })
+
   it('exposes bounded attachment and skill management panels without permanent vertical chrome', () => {
     const files = workspaceMarkup({}, 'attachments')
     expect(files).toContain('role="dialog"')
@@ -483,7 +706,7 @@ describe('Office Agent workspace UI', () => {
     expect(applying).toContain('>Stop<')
     expect(applying).not.toContain('class="send-button"')
 
-    expect(applying).toMatch(/aria-label="Attachments"[^>]*disabled/)
+    expect(applying).toMatch(/aria-label="Add attachments"[^>]*disabled/)
     expect(applying).toMatch(/<button type="button" disabled="">管理技能<\/button>/)
     const applyingPanel = workspaceMarkup({ applying: true }, 'attachments')
     expect(applyingPanel).toMatch(/class="upload-button"[^>]*aria-disabled="true"/)
@@ -574,7 +797,7 @@ describe('Office Agent workspace UI', () => {
         }),
       ]),
     })
-    expect(html).toContain('(empty document)')
+    expect(html).toContain('空白内容')
     expect(html).toContain('这是完整草稿。')
     expect(html).not.toContain('Mode: replace')
   })
@@ -726,11 +949,13 @@ describe('Office Agent workspace UI', () => {
           session,
           ui,
           disconnect: vi.fn(),
-          host: 'word',
+          host: 'powerpoint',
         }),
       )
     })
-    const opener = container.querySelector<HTMLButtonElement>('[aria-label="Attachments"]')!
+    const opener = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === '管理技能',
+    )!
     await act(async () => opener.click())
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!
     expect(document.activeElement).toBe(dialog.querySelector('h2'))
@@ -739,7 +964,7 @@ describe('Office Agent workspace UI', () => {
       dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
     expect(container.querySelector('[role="dialog"]')).toBeNull()
-    expect(document.activeElement).toBe(opener)
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Session menu"]'))
     await act(async () => root.unmount())
     container.remove()
   })
@@ -861,84 +1086,87 @@ describe('Office Agent workspace UI', () => {
     )
   })
 })
-it('serializes durable upload, permits same-file retry and drops a late result after new task', async () => {
-  const snapshot: OfficeAgentSnapshot = {
-    assistantText: 'Ready',
-    activity: '',
-    busy: false,
-    applying: false,
-    status: 'done',
-    retryable: true,
-    error: 'tool_failed',
-    errorMessage: 'Retry',
-    timeline: [{ id: 'a', kind: 'assistant', text: 'Ready' }],
-  }
-  const session = {
-    snapshot: () => snapshot,
-    subscribe: () => () => {},
-    send: vi.fn(),
-    stop: vi.fn(),
-    confirm: vi.fn(),
-    reject: vi.fn(),
-    newTask: vi.fn(),
-    retry: vi.fn(),
-    logout: vi.fn(),
-    authenticationLost: vi.fn(),
-    dispose: vi.fn(),
-  } satisfies OfficeAgentSession
-  let finish!: () => void
-  const upload = vi.fn(
-    () =>
-      new Promise<void>((resolve) => {
-        finish = resolve
-      }),
-  )
-  const ui: OfficeWorkspaceUi = {
-    attachments: () => [],
-    skills: () => [],
-    skillPackagesEnabled: true,
-    durableAttachmentsAvailable: () => true,
-    upload,
-    clear: vi.fn(),
-  }
-  const container = document.createElement('div')
-  document.body.append(container)
-  const root = createRoot(container)
-  await act(async () =>
-    root.render(
-      React.createElement(AgentWorkspace, {
-        session,
-        ui,
-        disconnect: vi.fn(),
-        host: 'powerpoint',
-        initialPanel: 'attachments',
-      }),
-    ),
-  )
-  const input = container.querySelector<HTMLInputElement>('#session-upload')!
-  Object.defineProperty(input, 'files', {
-    configurable: true,
-    value: [new File(['hello'], 'source.txt')],
-  })
-  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
-  expect(upload).toHaveBeenCalledOnce()
-  expect(input.value).toBe('')
-  expect(input.disabled).toBe(true)
-  expect(container.textContent).toContain('正在上传到 PC 并解析')
-  expect(container.textContent).toContain('退出登录不会删除')
-  const retry = Array.from(container.querySelectorAll('button')).find(
-    (b) => b.textContent === 'Retry',
-  )!
-  expect(retry.disabled).toBe(true)
-  const newTask = Array.from(container.querySelectorAll('button')).find(
-    (b) => b.textContent === '新对话',
-  )!
-  await act(async () => newTask.click())
-  await act(async () => finish())
-  expect(container.textContent).not.toContain('source.txt 已保存')
-  await act(async () => root.unmount())
-  container.remove()
-})
+it.each(['session-upload', 'composer-attachment-upload'])(
+  'serializes %s and drops a late result after new task',
+  async (pickerId) => {
+    const snapshot: OfficeAgentSnapshot = {
+      assistantText: 'Ready',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'done',
+      retryable: true,
+      error: 'tool_failed',
+      errorMessage: 'Retry',
+      timeline: [{ id: 'a', kind: 'assistant', text: 'Ready' }],
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => {},
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+      dispose: vi.fn(),
+    } satisfies OfficeAgentSession
+    let finish!: () => void
+    const upload = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const ui: OfficeWorkspaceUi = {
+      attachments: () => [],
+      skills: () => [],
+      skillPackagesEnabled: true,
+      durableAttachmentsAvailable: () => true,
+      upload,
+      clear: vi.fn(),
+    }
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () =>
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+          initialPanel: 'attachments',
+        }),
+      ),
+    )
+    const input = container.querySelector<HTMLInputElement>(`#${pickerId}`)!
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['hello'], 'source.txt')],
+    })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+    expect(upload).toHaveBeenCalledOnce()
+    expect(input.value).toBe('')
+    expect(input.disabled).toBe(true)
+    expect(container.textContent).toContain('正在上传')
+    expect(container.textContent).toContain('退出登录不会删除')
+    const retry = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Retry',
+    )!
+    expect(retry.disabled).toBe(true)
+    const newTask = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === '新对话',
+    )!
+    await act(async () => newTask.click())
+    await act(async () => finish())
+    expect(container.textContent).not.toContain('source.txt 已保存')
+    await act(async () => root.unmount())
+    container.remove()
+  },
+)
 
 it('refreshes persisted acquisition history after webpage failure and explicit retry without losing durable files', async () => {
   const snapshot = {
@@ -1102,4 +1330,134 @@ it('renders independent research when no presentation project or production exis
   } finally {
     await act(async () => root.unmount())
   }
+})
+
+it('shows the actual image step and expandable safe PC failure detail', async () => {
+  let observe: ((event: OfficeToolActivity) => void) | undefined
+  const session = createOfficeAgentSession({
+    transport: {
+      stream: () => ({ cancel: vi.fn() }),
+      setToolActivityHandler: (next) => {
+        observe = next
+      },
+    },
+    skill: {
+      id: 'test',
+      systemPrompt: '',
+      tools: [{ name: 'insert_web_image', description: 'image', inputSchema: { type: 'object' } }],
+      executeTool: vi.fn(),
+    },
+    proposals: createStructuredProposalController(),
+  })
+  session.send('Insert image')
+  await Promise.resolve()
+  const base = { callId: 'call_image123', toolName: 'insert_web_image', startedAt: Date.now() }
+  observe!({ ...base, state: 'running' })
+  observe!({ ...base, state: 'error', summary: 'image_fetch_unavailable' })
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  await act(async () =>
+    root.render(
+      React.createElement(AgentWorkspace, {
+        session,
+        ui: {
+          attachments: () => [],
+          skills: () => [],
+          skillPackagesEnabled: true,
+          upload: vi.fn(),
+          clear: vi.fn(),
+        },
+        disconnect: vi.fn(),
+        host: 'powerpoint',
+      }),
+    ),
+  )
+  expect(container.textContent).toContain('插入网络图片未完成')
+  expect(container.textContent).not.toContain('准备修改')
+  expect(container.textContent).not.toContain('Office tool failed')
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('.ai-work-group-summary')!.click(),
+  )
+  await act(async () => container.querySelector<HTMLButtonElement>('.ai-step-title')!.click())
+  expect(container.querySelector('.ai-step-detail')?.textContent).toBe(
+    '图片暂时无法获取（image_fetch_unavailable）',
+  )
+  await act(async () => root.unmount())
+  session.dispose()
+  container.remove()
+})
+
+it('shows the runtime selected by WisWork PC without exposing a second mode switch', () => {
+  const standard = workspaceMarkup({}, undefined, 'powerpoint', undefined, 'standard')
+  const enhanced = workspaceMarkup({}, undefined, 'powerpoint', undefined, 'enhanced')
+
+  expect(standard).toContain('标准模式')
+  expect(enhanced).toContain('增强模式')
+  expect(enhanced).toContain('由 WisWork PC 管理')
+  expect(enhanced).not.toMatch(/切换到|启用增强|mode-switch/)
+})
+
+it('shows PowerPoint clarification as one model-authored question at a time', () => {
+  const html = workspaceMarkup(
+    {
+      questionnaire: Object.freeze([
+        Object.freeze({ id: 'audience', label: '这份 PPT 面向谁？', options: ['客户', '团队'] }),
+        Object.freeze({ id: 'style', label: '希望什么风格？', options: ['简洁', '杂志感'] }),
+      ]),
+    },
+    undefined,
+    'powerpoint',
+  )
+
+  expect(html).toContain('这份 PPT 面向谁？')
+  expect(html).not.toContain('希望什么风格？')
+  expect(html).toContain('下一题')
+})
+
+it('collapses an applied PowerPoint proposal into a concise verified result', () => {
+  const structured = {
+    id: 'ppt-applied',
+    operation: 'edit_slide',
+    title: '设置 LLM 介绍 PPT 封面',
+    impact: {
+      host: 'powerpoint',
+      targets: ['256#3943334991', 'slide-1'],
+      count: 4,
+    },
+    preview: { slideIndex: 0 },
+    fingerprint: 'private',
+    before: '',
+    after: '',
+  }
+  const html = workspaceMarkup(
+    {
+      proposal: undefined,
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'result',
+          kind: 'proposal' as const,
+          proposal: structured,
+          state: 'applied' as const,
+        }),
+      ]),
+    },
+    undefined,
+    'powerpoint',
+  )
+
+  expect(html).toContain('设置 LLM 介绍 PPT 封面')
+  expect(html).toContain('已更新 4 项')
+  expect(html).not.toMatch(
+    /CHANGE APPLIED|Review exact impact|Before|After|empty document|Version/i,
+  )
+  expect(html).not.toContain('256#3943334991')
+})
+
+it('announces when the current relay session could not be remembered', () => {
+  const notice =
+    'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
+  const html = workspaceMarkup({}, undefined, 'word', notice)
+  expect(html).toContain('role="status"')
+  expect(html).toContain(notice)
 })

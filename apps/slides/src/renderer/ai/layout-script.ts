@@ -69,6 +69,13 @@ export type SlideEditOp = (
   | { kind: 'style'; id: string; style: SlideStylePatch }
   | { kind: 'fill'; id: string; fill: string }
   | { kind: 'stroke'; id: string; stroke: { color: string; widthPt: number } | null }
+  | {
+      kind: 'add_text'
+      id: string
+      paragraphs: EditParagraph[]
+      geometry: { x: number; y: number; w: number; h: number; rotation: number }
+    }
+  | { kind: 'delete'; id: string; createdByClientId?: string }
 ) & {
   /** Group child: dispatched with groupId so the IPC patches the child slice inside the group */
   groupId?: string
@@ -106,6 +113,7 @@ export function runLayoutScript(
   const pending = new Map<string, LayoutOp>()
   // Non-geometry ops: keep script call order (order matters when the same element changes text then style)
   const edits: SlideEditOp[] = []
+  const additions = new Map<string, Extract<SlideEditOp, { kind: 'add_text' }>>()
 
   /** Common existence/read-only validation (shared by all write primitives).
    *  Direct children of a top-level group pass (their ops carry groupId); deeper nesting is read-only. */
@@ -156,7 +164,13 @@ export function runLayoutScript(
       rotation: num(p.rotation, 'rotation', cur.rotation),
       ...(el.groupId ? { groupId: el.groupId } : {}),
     }
-    if (next.w < 1 || next.h < 1) throw new Error(`setBox("${key}"): w/h must be ≥ 1px`)
+    if (next.w <= 0 || next.h <= 0) throw new Error(`setBox("${key}"): w/h must be > 0px`)
+    const addition = additions.get(key)
+    if (addition) {
+      addition.geometry = { x: next.x, y: next.y, w: next.w, h: next.h, rotation: next.rotation }
+      Object.assign(el, next)
+      return
+    }
     pending.set(key, next)
   }
 
@@ -177,8 +191,8 @@ export function runLayoutScript(
     const el = guard('resizeBy', id)
     const base = pending.get(key) ?? el
     setBox(id, {
-      w: Math.max(1, base.w + reqNum(`resizeBy("${key}")`, 'dw', dw)),
-      h: Math.max(1, base.h + reqNum(`resizeBy("${key}")`, 'dh', dh)),
+      w: Math.max(Number.EPSILON, base.w + reqNum(`resizeBy("${key}")`, 'dw', dw)),
+      h: Math.max(Number.EPSILON, base.h + reqNum(`resizeBy("${key}")`, 'dh', dh)),
     })
   }
 
@@ -306,6 +320,44 @@ export function runLayoutScript(
     edits.push({ kind: 'stroke', id: key, stroke: { color: hex, widthPt }, ...grp })
   }
 
+  const addText = (clientId: unknown, textOrParagraphs: unknown, box: unknown): string => {
+    const id = String(clientId)
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id) || byId.has(id))
+      throw new Error('addText: clientId must be a unique bounded identifier')
+    const p = (box ?? {}) as Record<string, unknown>
+    const geometry = {
+      x: reqNum(`addText("${id}")`, 'x', p.x),
+      y: reqNum(`addText("${id}")`, 'y', p.y),
+      w: reqNum(`addText("${id}")`, 'w', p.w),
+      h: reqNum(`addText("${id}")`, 'h', p.h),
+      rotation: p.rotation === undefined ? 0 : reqNum(`addText("${id}")`, 'rotation', p.rotation),
+    }
+    if (geometry.w <= 0 || geometry.h <= 0) throw new Error(`addText("${id}"): w/h must be > 0px`)
+    const addition: Extract<SlideEditOp, { kind: 'add_text' }> = {
+      kind: 'add_text',
+      id,
+      paragraphs: normalizeParagraphs(`addText("${id}")`, textOrParagraphs),
+      geometry,
+    }
+    additions.set(id, addition)
+    edits.push(addition)
+    byId.set(id, { id, type: 'text', text: '', ...geometry })
+    return id
+  }
+
+  const deleteElement = (id: unknown): void => {
+    const element = guard('delete', id)
+    const key = String(id)
+    if (element.groupId) throw new Error(`delete: "${key}" is inside a group; ungroup it first`)
+    pending.delete(key)
+    edits.push({
+      kind: 'delete',
+      id: key,
+      ...(additions.has(key) ? { createdByClientId: key } : {}),
+    })
+    byId.delete(key)
+  }
+
   const log = (...args: unknown[]) => {
     if (logs.length >= 50) return
     logs.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
@@ -323,6 +375,8 @@ export function runLayoutScript(
       setStyle,
       setFill,
       setStroke,
+      addText,
+      delete: deleteElement,
       log,
     })
   } catch (err) {

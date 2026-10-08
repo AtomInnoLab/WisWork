@@ -4,10 +4,12 @@ import {
   presentationRetentionEnabled,
 } from './presentation-project-retention'
 import { execSync, spawn } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { resolveIterationIdentity } from './iteration-identity'
+import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import {
   BrowserWindow,
+  clipboard,
   Menu,
   app,
   dialog,
@@ -40,7 +42,12 @@ import {
   extractCallbackUrl,
 } from '@wiswork/auth'
 import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
+import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
+import { configureImageSearch, imageSearch } from '@wiswork/ai-search'
+import type { MessagesRequest } from '@wiswork/codex-bridge'
+import { WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from '@wiswork/ai-provider'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
+import { createEnhancedTelemetry } from '@wiswork/agent-runtime'
 import {
   appMenuLabels,
   contextMenuLabels,
@@ -51,7 +58,12 @@ import {
   showSaveDialogWithMemory,
   windowMenuTemplate,
 } from '@wiswork/electron-utils'
-import { readAppSettings, writeAppSetting } from './app-settings'
+import {
+  readAppSettings,
+  readRequestedAgentRuntime,
+  writeAppSetting,
+  writeRequestedAgentRuntime,
+} from './app-settings'
 import { ProjectStore } from '@wiswork/project-store'
 import { parseTectonicManifest } from '@wiswork/latex-compiler'
 import {
@@ -161,8 +173,23 @@ import {
   releaseLatexCloseTabs,
 } from './latex-final-close'
 import { registerLatexProtocolScheme } from './latex-protocol-scheme'
+import { ShellCodexRuntime } from './codex-runtime'
+import { registerCodexRuntimeIpc } from './codex-ipc'
+import { registerPcCodexHosts } from './pc-codex-hosts'
+import { createProductionCodexBootstrap } from './codex-engine'
+import { createOfficeCodexProxy } from './office-codex-proxy'
+import { createOfficeImageHandoff } from './office-image-handoff'
+import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
+import { createImageSearchSecretStore } from './image-search-secret-store'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
+import { createBeforeQuitBarrier } from './before-quit-barrier'
+import { EnhancedDiagnosticsStore, probeWisUsageEventStream } from './enhanced-diagnostics'
+import codexComponentManifest from '../../../../tools/codex/manifest.json'
+import {
+  registerEnhancedModeComponentIpc,
+  type EnhancedModeComponentController,
+} from './enhanced-mode-component'
 import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
@@ -182,10 +209,29 @@ import {
   createOfficeRelayClient,
   createOfficePresentationGovernanceProxy,
   officeRelayEndpointFromEnv,
-  type OfficeRelayClient,
 } from './office-relay-client'
-import { createOfficeRelayPool } from './office-relay-pool'
+import { createOfficeDesignDocuments } from './office-design-document'
+import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
+import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
+import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
 import {
+  completeOfficeRelayOAuthLogin,
+  createOfficeRelayActivationFence,
+  invalidateOfficeRelayBindingForCurrentAccount,
+  lockOfficeRelayPersistence,
+  logoutOfficeRelaySession,
+  logoutWithOfficeRelay,
+  officePairingResumeEnabled,
+  shutdownOfficeRelaySession,
+  saveOfficeRelayBindingForCurrentAccount,
+  startOfficeRelayPersistence,
+  syncOfficeRelayAccountSafely,
+  syncOfficeRelaySession,
+  terminalOfficeRelayAuthLoss,
+} from './office-relay-runtime'
+import {
+  createOfficeLocalSearchProxy,
+  createOfficeRemoteImageDownloader,
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
 } from './office-retrieval-proxy'
@@ -204,7 +250,14 @@ import {
 // run silently quits and forwards its argv to the running installed WisWork.
 // WISWORK_USER_DATA: test drivers point this at a scratch dir so an
 // automated instance can run alongside the dev instance (separate lock).
-if (!app.isPackaged)
+const iterationMetadata: unknown = app.isPackaged
+  ? JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).wisworkIteration
+  : undefined
+const iterationIdentity = resolveIterationIdentity(iterationMetadata)
+if (iterationIdentity) {
+  app.setName(iterationIdentity.productName)
+  app.setPath('userData', join(app.getPath('appData'), iterationIdentity.productName))
+} else if (!app.isPackaged)
   app.setPath(
     'userData',
     process.env.WISWORK_USER_DATA ?? join(app.getPath('appData'), 'WisWork Dev'),
@@ -267,6 +320,13 @@ configureSlidesRuntime({
   preloadPath: join(SLIDES_OUT, 'preload', 'index.js'),
   rendererDevUrl: process.env.SLIDES_RENDERER_URL,
   rendererFilePath: join(SLIDES_OUT, 'renderer', 'index.html'),
+  openDesignSidecar: (senderId, path) => {
+    if (!tabManager) return
+    designSidecarOwners.set(path, senderId)
+    const existing = tabManager.findMarkdownTabByPath(path)
+    if (existing) tabManager.activateTab(existing)
+    else tabManager.openMarkdownTab(path)
+  },
 })
 configurePdfRuntime({
   preloadPath: join(PDF_OUT, 'preload', 'index.js'),
@@ -289,16 +349,45 @@ configureLatexRuntime({
 registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
+let enhancedModeComponentController: EnhancedModeComponentController | null = null
+let codexRuntime: ShellCodexRuntime | null = null
+let pcCodexHosts: ReturnType<typeof registerPcCodexHosts> | null = null
+let activeAgentRuntime: 'standard' | 'enhanced' = 'standard'
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
-let officeRelay: OfficeRelayClient | null = null
+let officeRelay: OfficeRelayPool | null = null
+let officeRelayLifecycle: OfficeRelayLifecycle | null = null
+let officeRelayPersistenceAvailable = false
 let officeRelayDiagnostic = 'disconnected'
 let presentationRetentionTimer: ReturnType<typeof setInterval> | null = null
+const officeRelayActivationFence = createOfficeRelayActivationFence()
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
 }
+
+function disableOfficeRelayPersistence(): void {
+  officeRelayPersistenceAvailable = false
+  officeRelayLifecycle = null
+}
+
+async function fallbackToOrdinaryOfficeRelay(options: {
+  expectedEpoch: number
+  allowUnlock: boolean
+  suspendedReason: string
+}): Promise<void> {
+  if (!officeRelayActivationFence.isCurrent(options.expectedEpoch)) {
+    return
+  }
+  disableOfficeRelayPersistence()
+  await officeRelayActivationFence.settle({
+    ...options,
+    getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+    pool: officeRelay,
+  })
+}
+
 let accountLoginSender: Electron.WebContents | null = null
 const authDeepLinks = createAuthDeepLinkQueue({
   notify(event) {
@@ -318,6 +407,11 @@ configureMarkdownRuntime({
 // same file when they pick up i18n later. WISWORK_LANG overrides for tests.
 
 const APP_SETTINGS_PATH = () => join(app.getPath('userData'), 'app-settings.json')
+const imageSearchSecrets = () =>
+  createImageSearchSecretStore({
+    path: join(app.getPath('userData'), 'image-search-key.enc'),
+    safeStorage,
+  })
 
 let uiLang: Lang | null = null
 
@@ -1209,6 +1303,7 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
 
 let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
+const designSidecarOwners = new Map<string, number>()
 
 /**
  * When the user creates a file from a specific project view, remember which
@@ -1309,6 +1404,7 @@ function createShellWindow(): void {
           : kind === 'markdown'
             ? tm('untitledMarkdown')
             : tm('untitledSheet'),
+    (owner) => void pcCodexHosts?.closeOwner(owner),
   )
   tabManager = manager
 
@@ -1353,6 +1449,11 @@ function createShellWindow(): void {
     manager.setTabFileFor(wc.id, path)
     recordRecentFile(path)
     applyPendingProject(path)
+    const slidesSenderId = designSidecarOwners.get(path)
+    const slidesContents =
+      slidesSenderId === undefined ? undefined : webContents.fromId(slidesSenderId)
+    if (slidesContents && !slidesContents.isDestroyed())
+      slidesContents.send('ai:design-sidecar-changed')
   })
   // markdown "convert & open in Docs" → route the fresh .docx to a docs tab
   setMarkdownDocxExportedHook((path) => {
@@ -1734,11 +1835,41 @@ function registerHomeIpc(): void {
   let pendingLoginUrl = ''
   ipcMain.handle(HOME_CHANNELS.accountStatus, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    const status = await syncOfficeBridgeAvailability(officeBridge, () =>
-      requireAuthRuntime().client.getValidAccountStatus(),
-    )
-    if (!status.loggedIn) officeRelay?.revoke('auth_required')
-    return status
+    const expectedEpoch = officeRelayActivationFence.snapshot()
+    return syncOfficeRelayAccountSafely({
+      getAccountStatus: () =>
+        syncOfficeBridgeAvailability(officeBridge, () =>
+          requireAuthRuntime().client.getValidAccountStatus(),
+        ),
+      syncBindingLifecycle: async (account) => {
+        if (officeRelayPersistenceAvailable) {
+          await syncOfficeRelaySession(
+            account,
+            officeRelayPersistenceAvailable,
+            officeRelayLifecycle,
+            officeRelay,
+            () => expectedEpoch === officeRelayActivationFence.snapshot(),
+          )
+          if (expectedEpoch !== officeRelayActivationFence.snapshot())
+            officeRelay?.suspend('auth_required')
+          return
+        }
+        await fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'auth_required',
+        })
+      },
+      fallbackToOrdinary: () =>
+        fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'binding_lifecycle',
+        }),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -1763,11 +1894,30 @@ function registerHomeIpc(): void {
     assertHomeAuthIpc(event, args)
     if (pendingLoginUrl) await shell.openExternal(pendingLoginUrl)
   })
-  ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
+  ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
+    await enhancedModeComponentController?.revoke()
+    await pcCodexHosts?.close()
+    await codexRuntime?.logout()
     officeBridge?.setSessionAvailable(false)
-    officeRelay?.revoke('logout')
-    return requireAuthRuntime().client.logout()
+    officeRelayActivationFence.lock()
+    try {
+      return await logoutWithOfficeRelay({
+        invalidate: () => logoutOfficeRelaySession(officeRelayLifecycle, officeRelay),
+        logout: () => requireAuthRuntime().client.logout(),
+        onBindingFailure: () => {
+          officeRelayDiagnostic = 'error:binding_lifecycle'
+          lockOfficeRelayPersistence({
+            disable: disableOfficeRelayPersistence,
+            pool: officeRelay,
+            reason: 'logout',
+          })
+        },
+      })
+    } finally {
+      officeRelayActivationFence.lock()
+      officeRelay?.suspend('logout')
+    }
   })
   ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -1973,7 +2123,39 @@ function registerHomeIpc(): void {
     if (!isUpdateChannel(channel) || channel === currentUpdateChannel()) return
     cachedUpdateChannel = channel
     writeAppSetting(APP_SETTINGS_PATH(), 'updateChannel', channel)
-    applyUpdateChannel(channel)
+    if (!iterationIdentity) applyUpdateChannel(channel)
+  })
+
+  const assertImageSearchSettingsIpc = (event: Electron.IpcMainInvokeEvent) => {
+    if (!shellWindow || event.sender !== shellWindow.webContents)
+      throw new Error('Untrusted IPC sender.')
+  }
+  ipcMain.handle(HOME_CHANNELS.saveImageSearchKey, (event, key: unknown) => {
+    assertImageSearchSettingsIpc(event)
+    if (typeof key !== 'string') throw new Error('invalid_image_search_key')
+    imageSearchSecrets().save(key)
+    return imageSearchSecrets().status()
+  })
+  ipcMain.handle(HOME_CHANNELS.clearImageSearchKey, (event, ...args: unknown[]) => {
+    assertImageSearchSettingsIpc(event)
+    if (args.length) throw new Error('Invalid image search settings IPC payload.')
+    imageSearchSecrets().clear()
+    return imageSearchSecrets().status()
+  })
+  ipcMain.handle(HOME_CHANNELS.imageSearchKeyStatus, (event, ...args: unknown[]) => {
+    assertImageSearchSettingsIpc(event)
+    if (args.length) throw new Error('Invalid image search settings IPC payload.')
+    return imageSearchSecrets().status()
+  })
+  ipcMain.handle(HOME_CHANNELS.testImageSearchKey, async (event, ...args: unknown[]) => {
+    assertImageSearchSettingsIpc(event)
+    if (args.length) throw new Error('Invalid image search settings IPC payload.')
+    try {
+      const result = await imageSearch('WisWork presentation', 1, { fallback: false })
+      return { ok: true, resultCount: result.images.length }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'image_search_error' }
+    }
   })
 
   ipcMain.handle(
@@ -2389,13 +2571,14 @@ function revealShellWindow(): void {
   shellWindow?.focus()
 }
 
-registerAuthProtocolRouting({
-  registerProtocolClient: (protocol) => app.setAsDefaultProtocolClient(protocol),
-  onOpenUrl: (handler) => app.on('open-url', handler),
-  onSecondInstance: (handler) => app.on('second-instance', (_event, argv) => handler(argv)),
-  initialArgv: process.argv,
-  consume: async (input) => authDeepLinks.handle(input),
-})
+if (!iterationIdentity)
+  registerAuthProtocolRouting({
+    registerProtocolClient: (protocol) => app.setAsDefaultProtocolClient(protocol),
+    onOpenUrl: (handler) => app.on('open-url', handler),
+    onSecondInstance: (handler) => app.on('second-instance', (_event, argv) => handler(argv)),
+    initialArgv: process.argv,
+    consume: async (input) => authDeepLinks.handle(input),
+  })
 
 // On macOS a file opened from Finder is not in argv; it arrives via the open-file event (before ready).
 // If another instance already holds the lock, this process exits, and the path must ride along in
@@ -2479,7 +2662,9 @@ app.whenReady().then(async () => {
 
   // Hold the lock before touching either legacy or current profile. Migration completes before
   // auth/session/settings consumers and before any BrowserWindow is created.
-  if (app.isPackaged) migrateLegacyUserData(app.getPath('appData'), app.getPath('userData'))
+  if (app.isPackaged && !iterationIdentity)
+    migrateLegacyUserData(app.getPath('appData'), app.getPath('userData'))
+  configureImageSearch({ serpApiKey: () => imageSearchSecrets().load() })
   const themeController = createThemeController({
     settingsPath: APP_SETTINGS_PATH(),
     nativeTheme,
@@ -2507,6 +2692,246 @@ app.whenReady().then(async () => {
     userDataPath: app.getPath('userData'),
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
+  })
+  // Runtime selection is immutable for this process. Settings changes below only affect next boot.
+  activeAgentRuntime = readRequestedAgentRuntime(APP_SETTINGS_PATH())
+  const enhancedTelemetry = createEnhancedTelemetry((event) =>
+    console.info('[enhanced-aggregate]', event),
+  )
+  const enhancedDiagnostics = new EnhancedDiagnosticsStore({
+    path: join(app.getPath('userData'), 'diagnostics', 'enhanced-runtime.json'),
+  })
+  const enhancedDiagnostic = (code: string) => {
+    enhancedDiagnostics.record(code)
+    console.warn('[enhanced-runtime]', code)
+  }
+  const enhancedModeComponent = new EnhancedModeComponentManager({
+    cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
+    manifest: codexComponentManifest,
+    onPhase: ({ phase, outcome }) => {
+      const mapped =
+        phase === 'digest' || phase === 'signature'
+          ? 'verify'
+          : phase === 'promote'
+            ? 'install'
+            : phase
+      enhancedTelemetry.component(mapped, outcome)
+    },
+  })
+  const enhancedAsset = codexComponentManifest.component.assets.find(
+    (asset) => asset.platform === process.platform && asset.arch === process.arch,
+  )
+  // Release-reviewed rollout baseline. Renderer/user environment values never grant authority.
+  const enhancedHosts = Object.freeze({
+    latex: true,
+    slides: true,
+    docs: true,
+    sheets: true,
+    'office-word': true,
+    'office-excel': true,
+    'office-powerpoint': true,
+  } as const)
+  const enhancedPolicy = Object.freeze({
+    globalEnabled: true,
+    hosts: enhancedHosts,
+    rawOfficeEnabled: true,
+  })
+  const enhancedPolicyAllowed = () => enhancedPolicy.globalEnabled
+  codexRuntime = new ShellCodexRuntime({
+    activeAgentRuntime,
+    policy: enhancedPolicy,
+    isSignedIn: async () => (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn,
+    resolveExecutable: () => enhancedModeComponent.resolveExecutable(),
+    bootstrap: createProductionCodexBootstrap({
+      fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) =>
+        requireAuthRuntime().client.fetchWithAuth((accessToken) =>
+          fetch(WISWORK_MESSAGES_URL, {
+            method: 'POST',
+            signal,
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+              'x-req-location': WISWORK_REQUEST_LOCATION,
+            },
+            body: JSON.stringify(request),
+          }),
+        ),
+      diagnostics: enhancedDiagnostic,
+      onProtocolRecording: (recording, outcome) =>
+        enhancedDiagnostics.recordProtocol(recording, outcome),
+    }),
+    diagnostics: enhancedDiagnostic,
+    telemetry: enhancedTelemetry,
+    diagnosticTasks: {
+      begin: (host) => enhancedDiagnostics.beginTask(host),
+      finish: (diagnosticId, status, failureCode) =>
+        enhancedDiagnostics.finishTask(diagnosticId, status, failureCode),
+    },
+  })
+  pcCodexHosts = registerPcCodexHosts({
+    ipcMain,
+    runtime: codexRuntime,
+    policy: enhancedPolicy,
+    hostForOwner: (owner) => {
+      const id = (owner as { id?: unknown }).id
+      return typeof id === 'number' ? (tabManager?.enhancedHostForWebContents(id) ?? null) : null
+    },
+    telemetry: enhancedTelemetry,
+  })
+  registerCodexRuntimeIpc({
+    ipcMain,
+    runtime: codexRuntime,
+    documentIdForOwner: (owner) => pcCodexHosts?.documentIdForOwner(owner) ?? null,
+  })
+  // Office session state is emitted once when a pairing is established or resumed. Settle the
+  // restart-selected runtime first so a ready Enhanced runtime cannot be advertised as Standard
+  // for the lifetime of that Office session.
+  await codexRuntime.initialize().catch(() => undefined)
+  const officePolicyAuthority = createShellEnhancedPolicyAuthority(
+    () => codexRuntime?.policyGeneration ?? -1,
+  )
+  const officeCodexProxy = createOfficeCodexProxy({
+    runtime: codexRuntime,
+    rollout: enhancedPolicy,
+    policyAuthority: officePolicyAuthority,
+    telemetry: enhancedTelemetry,
+    prepareImageHandoff: createOfficeImageHandoff(nativeImage),
+  })
+  enhancedModeComponentController = registerEnhancedModeComponentIpc({
+    ipcMain,
+    component: enhancedModeComponent,
+    isTrustedSender: (owner) => owner === shellWindow?.webContents,
+    readSavedMode: () => readRequestedAgentRuntime(APP_SETTINGS_PATH()),
+    writeSavedMode: (mode) => writeRequestedAgentRuntime(APP_SETTINGS_PATH(), mode),
+    currentMode: () => activeAgentRuntime,
+    runtimeInUse: () => activeAgentRuntime === 'enhanced',
+    authorizeEnhanced: async () =>
+      (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
+    policyAllowed: enhancedPolicyAllowed,
+    // Task 6 supplies the host session adapter. Until then a saved request is visible but not active.
+    enhancedRuntimeAvailable: () => codexRuntime?.state === 'ready',
+    recoverEnhancedRuntime: async () => {
+      await codexRuntime?.initialize()
+    },
+    diagnostics: {
+      summary: () => ({
+        recent: enhancedDiagnostics.recent().map((task) => ({
+          diagnosticId: task.diagnosticId,
+          host: task.host,
+          startedAt: task.startedAt,
+          ...(task.endedAt === undefined ? {} : { endedAt: task.endedAt }),
+          status: task.status,
+          ...(task.failureCode === undefined ? {} : { failureCode: task.failureCode }),
+        })),
+        detailedUntil: enhancedDiagnostics.detailedUntil(),
+      }),
+      selfCheck: async () => {
+        const wisusageProbe = async () => {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 10_000)
+          timeout.unref()
+          try {
+            const response = await requireAuthRuntime().client.fetchWithAuth((accessToken) =>
+              fetch(WISWORK_MESSAGES_URL, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: {
+                  authorization: `Bearer ${accessToken}`,
+                  'content-type': 'application/json',
+                  'x-req-location': WISWORK_REQUEST_LOCATION,
+                },
+                body: JSON.stringify({
+                  model: 'openai/gpt-5.6-sol',
+                  max_tokens: 8,
+                  stream: true,
+                  system: 'WisWork connectivity self-check. Reply OK only.',
+                  messages: [{ role: 'user', content: 'OK' }],
+                }),
+              }),
+            )
+            return probeWisUsageEventStream(response)
+          } finally {
+            clearTimeout(timeout)
+          }
+        }
+        return enhancedDiagnostics.runSelfCheck({
+          component: async () =>
+            (await enhancedModeComponent.status()).state === 'ready'
+              ? true
+              : ({ status: 'failed', code: 'component_unavailable' } as const),
+          authentication: async () =>
+            (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
+          runtime: async () =>
+            codexRuntime?.state === 'ready'
+              ? true
+              : ({ status: 'failed', code: 'runtime_unavailable' } as const),
+          mcp: async () =>
+            enhancedDiagnostics.hasObserved('mcp_ready') ? true : ('not_tested' as const),
+          wisusage: wisusageProbe,
+        })
+      },
+      enableDetailed: () => {
+        enhancedDiagnostics.enableDetailed()
+        return {
+          recent: enhancedDiagnostics.recent().map((task) => ({
+            diagnosticId: task.diagnosticId,
+            host: task.host,
+            startedAt: task.startedAt,
+            ...(task.endedAt === undefined ? {} : { endedAt: task.endedAt }),
+            status: task.status,
+            ...(task.failureCode === undefined ? {} : { failureCode: task.failureCode }),
+          })),
+          detailedUntil: enhancedDiagnostics.detailedUntil(),
+        }
+      },
+      copyId: (diagnosticId) => {
+        if (!enhancedDiagnostics.recent().some((task) => task.diagnosticId === diagnosticId)) {
+          throw new Error('diagnostic_not_found')
+        }
+        clipboard.writeText(diagnosticId)
+      },
+      export: async () => {
+        const options = {
+          title: 'Export Enhanced diagnostics',
+          defaultPath: `wiswork-enhanced-diagnostics-${Date.now()}.json`,
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        }
+        const result = shellWindow
+          ? await dialog.showSaveDialog(shellWindow, options)
+          : await dialog.showSaveDialog(options)
+        if (result.canceled || !result.filePath) return 'cancelled' as const
+        const report = enhancedDiagnostics.exportReport({
+          appVersion: app.getVersion(),
+          componentVersion: codexComponentManifest.component.version,
+          platform: process.platform as 'darwin' | 'win32' | 'linux',
+          arch: process.arch as 'arm64' | 'x64',
+          build: iterationMetadata,
+        })
+        const temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`
+        try {
+          writeFileSync(temporary, report, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+          renameSync(temporary, result.filePath)
+        } finally {
+          rmSync(temporary, { force: true })
+        }
+        return 'saved' as const
+      },
+    },
+    ...(enhancedAsset
+      ? {
+          metadata: {
+            platform: `${enhancedAsset.platform}-${enhancedAsset.arch}`,
+            bytes: enhancedAsset.bytes,
+            publisher:
+              enhancedAsset.trust.policy === 'windows'
+                ? (enhancedAsset.trust.publisher ?? 'OpenAI')
+                : (enhancedAsset.trust.teamIdentifier ?? 'OpenAI'),
+            license: codexComponentManifest.component.license.spdx,
+            primaryUrl: enhancedAsset.primaryUrl,
+            fallbackUrl: enhancedAsset.fallbackUrl,
+          },
+        }
+      : {}),
   })
   const asOfficePairing = (pairing: {
     pairingId: string
@@ -2539,7 +2964,20 @@ app.whenReady().then(async () => {
     audit: createOfficeOutboundAudit({ userDataPath: app.getPath('userData') }),
     onTerminalAuthLoss: () => {
       officeBridge?.setSessionAvailable(false)
-      officeRelay?.revoke('auth_required')
+      officeRelayActivationFence.lock()
+      void terminalOfficeRelayAuthLoss(officeRelayLifecycle, officeRelay)
+        .catch(() => {
+          officeRelayDiagnostic = 'error:binding_lifecycle'
+          lockOfficeRelayPersistence({
+            disable: disableOfficeRelayPersistence,
+            pool: officeRelay,
+            reason: 'auth_required',
+          })
+        })
+        .finally(() => {
+          officeRelayActivationFence.lock()
+          officeRelay?.suspend('auth_required')
+        })
     },
   })
   if (presentationRetentionEnabled(process.env)) {
@@ -2556,13 +2994,31 @@ app.whenReady().then(async () => {
     presentationRetentionTimer.unref()
   }
   try {
-    const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
-    const retrievalProxy = retrievalEndpoint
-      ? createOfficeRetrievalProxy({
-          endpoint: retrievalEndpoint,
-          fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+    const persistentPairing = officePairingResumeEnabled(process.env)
+    officeRelayPersistenceAvailable = persistentPairing
+    const officeRelayBindingStore = persistentPairing
+      ? createElectronOfficeRelayBindingStore({
+          userDataPath: app.getPath('userData'),
+          safeStorage,
         })
       : undefined
+    const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
+    const createRetrievalProxy = () =>
+      retrievalEndpoint
+        ? createOfficeRetrievalProxy({
+            endpoint: retrievalEndpoint,
+            fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+          })
+        : createOfficeLocalSearchProxy({
+            fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+            remoteDownloadImage: createOfficeRemoteImageDownloader({
+              fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+            }),
+            normalizeImage: createOfficeImageHandoff(nativeImage, { reencode: true }),
+          })
+    const retrievalCapabilities = retrievalEndpoint
+      ? (['web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const)
+      : (['web-search.v1', 'image-search.v1', 'image-fetch.v1'] as const)
     const endpoint = officeRelayEndpointFromEnv(process.env)
     const presentationUserDataPath = app.getPath('userData')
     const presentationProxy = createPresentationService({ userDataPath: presentationUserDataPath })
@@ -2576,15 +3032,47 @@ app.whenReady().then(async () => {
           endpoint,
           getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
           getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
+          refreshAccessToken: () =>
+            requireAuthRuntime()
+              .client.refresh()
+              .then((session) => session.accessToken),
           proxy: officeMessagesProxy,
-          retrievalProxy,
           presentationProxy,
           presentationGovernanceProxy,
           supportsTeamPresentation: true,
+          enhancedProxy: officeCodexProxy,
+          enhancedStatement: (host) => {
+            const enhancedHost = {
+              Word: 'office-word',
+              Excel: 'office-excel',
+              PowerPoint: 'office-powerpoint',
+            }[host] as 'office-word' | 'office-excel' | 'office-powerpoint'
+            return codexRuntime?.createOfficeSessionStatement(enhancedHost)
+          },
+          renewEnhancedStatement: async (previous) =>
+            codexRuntime?.renewOfficeSessionStatement(previous),
+          isEnhancedStatementCurrent: (statement) =>
+            codexRuntime?.isOfficeSessionStatementCurrent(statement) === true,
+          retrievalProxy: createRetrievalProxy(),
+          designDocument: createOfficeDesignDocuments({
+            directory: join(app.getPath('userData'), 'office-design-documents'),
+            openFile: async (path) => {
+              if (!tabManager) throw new Error('design_document_unavailable')
+              const existing = tabManager.findMarkdownTabByPath(path)
+              if (existing) tabManager.activateTab(existing)
+              else tabManager.openMarkdownTab(path)
+              shellWindow?.show()
+              shellWindow?.focus()
+            },
+          }),
+          retrievalCapabilities,
           negotiateCapabilities: true,
+          persistentPairing: () => officeRelayPersistenceAvailable,
           onPending: events.onPending,
           onPendingExpired: events.onPendingExpired,
           onStatus: events.onStatus,
+          onBinding: events.onBinding,
+          onBindingInvalidated: events.onBindingInvalidated,
         }),
       onPending: notifyOfficePairing,
       onPendingExpired: (pairingId) => {
@@ -2594,10 +3082,92 @@ app.whenReady().then(async () => {
       onStatus: (status) => {
         officeRelayDiagnostic = status
       },
+      onBinding: officeRelayBindingStore
+        ? (binding) =>
+            saveOfficeRelayBindingForCurrentAccount({
+              binding,
+              persistenceAvailable: () => officeRelayPersistenceAvailable,
+              getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+              put: (entry) => officeRelayBindingStore.put(entry),
+              tombstoneAccount: (accountId) => officeRelayBindingStore.tombstoneAccount(accountId),
+              onStorageFailure: async () => {
+                officeRelayDiagnostic = 'error:binding_lifecycle'
+                officeRelayActivationFence.lock()
+                await fallbackToOrdinaryOfficeRelay({
+                  expectedEpoch: officeRelayActivationFence.snapshot(),
+                  allowUnlock: false,
+                  suspendedReason: 'binding_lifecycle',
+                })
+              },
+            })
+        : undefined,
+      onBindingInvalidated: officeRelayBindingStore
+        ? (binding) =>
+            invalidateOfficeRelayBindingForCurrentAccount({
+              binding,
+              persistenceAvailable: () => officeRelayPersistenceAvailable,
+              getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+              remove: (accountId, bindingId) =>
+                officeRelayBindingStore.remove(accountId, bindingId),
+              onStorageFailure: async () => {
+                officeRelayDiagnostic = 'error:binding_lifecycle'
+                officeRelayActivationFence.lock()
+                await fallbackToOrdinaryOfficeRelay({
+                  expectedEpoch: officeRelayActivationFence.snapshot(),
+                  allowUnlock: false,
+                  suspendedReason: 'binding_lifecycle',
+                })
+              },
+            })
+        : undefined,
+      onAuthRequired: async () => {
+        officeRelayActivationFence.lock()
+        try {
+          await terminalOfficeRelayAuthLoss(officeRelayLifecycle, officeRelay)
+        } catch (error) {
+          officeRelayDiagnostic = 'error:binding_lifecycle'
+          lockOfficeRelayPersistence({
+            disable: disableOfficeRelayPersistence,
+            pool: officeRelay,
+            reason: 'auth_required',
+          })
+          throw error
+        } finally {
+          officeRelayActivationFence.lock()
+          officeRelay?.suspend('auth_required')
+        }
+      },
     })
+    if (persistentPairing && officeRelayBindingStore)
+      officeRelayLifecycle = createOfficeRelayLifecycle({
+        store: officeRelayBindingStore,
+        pool: officeRelay,
+        getAccountStatus: () => requireAuthRuntime().client.getAccountStatus(),
+        getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+      })
   } catch {
+    officeRelayPersistenceAvailable = false
+    officeRelayLifecycle = null
     officeRelayDiagnostic = 'error:invalid_config'
-    console.error('[office-relay] invalid endpoint configuration')
+    console.error('[office-relay] invalid configuration')
+  }
+  if (officeRelayLifecycle && officeRelay) {
+    const expectedEpoch = officeRelayActivationFence.snapshot()
+    await startOfficeRelayPersistence({
+      sync: () =>
+        officeRelayLifecycle!.syncAccount(
+          () => expectedEpoch === officeRelayActivationFence.snapshot(),
+        ),
+      fallbackToOrdinary: () =>
+        fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'binding_lifecycle',
+        }),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   }
   if (officeBridgeEnabled(process.env, app.isPackaged)) {
     officeBridgeDiagnostic = 'error'
@@ -2607,7 +3177,34 @@ app.whenReady().then(async () => {
     const initializedOfficeBridge = createOfficeBridge({
       allowedOrigin: officeOriginFromEnv(process.env),
       sessionAvailable: initialAccount.loggedIn,
-      proxy: officeMessagesProxy,
+      proxy: (request) => {
+        if (!request.enhanced) return officeMessagesProxy(request)
+        if (!request.executeTool || !request.sessionId || !request.requestId)
+          throw new Error('enhanced_tool_channel_unavailable')
+        const host = (
+          {
+            'office-word': 'Word',
+            'office-excel': 'Excel',
+            'office-powerpoint': 'PowerPoint',
+          } as const
+        )[request.enhanced.host]
+        return officeCodexProxy({
+          body: request.body,
+          signal: request.signal,
+          host,
+          sessionId: request.sessionId,
+          requestId: request.requestId,
+          statement: request.enhanced,
+          executeTool: (call) =>
+            request.executeTool!({
+              turnId: call.turnId,
+              callId: call.callId,
+              generation: call.generation,
+              toolName: call.toolName,
+              input: call.input,
+            }),
+        })
+      },
     })
     officeBridge = initializedOfficeBridge
     try {
@@ -2636,7 +3233,19 @@ app.whenReady().then(async () => {
         if (officeRelay?.listPending().some((entry) => entry.pairingId === id)) {
           return accountValid && (await officeRelay.approve(id))
         }
-        return officeBridge?.approve(id, accountValid) ?? false
+        const pending = officeBridge?.listPending().find((entry) => entry.pairingId === id)
+        const host = pending
+          ? (
+              {
+                Word: 'office-word',
+                Excel: 'office-excel',
+                PowerPoint: 'office-powerpoint',
+              } as const
+            )[pending.hostLabel as 'Word' | 'Excel' | 'PowerPoint']
+          : undefined
+        const statement =
+          accountValid && host ? codexRuntime?.createOfficeSessionStatement(host) : undefined
+        return officeBridge?.approve(id, accountValid, statement) ?? false
       },
       reject(id) {
         return officeRelay?.reject(id) || officeBridge?.reject(id) || false
@@ -2654,10 +3263,44 @@ app.whenReady().then(async () => {
     isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
   })
   void authDeepLinks.initialize(async (callback) => {
-    await requireAuthRuntime().client.consumeCallback(callback)
-    await syncOfficeBridgeAvailability(officeBridge, () =>
-      requireAuthRuntime().client.getValidAccountStatus(),
-    )
+    officeRelayActivationFence.lock()
+    officeRelay?.suspend('account_switch')
+    const expectedEpoch = officeRelayActivationFence.snapshot()
+    await completeOfficeRelayOAuthLogin({
+      consumeCallback: () => requireAuthRuntime().client.consumeCallback(callback),
+      getAccountStatus: () =>
+        syncOfficeBridgeAvailability(officeBridge, () =>
+          requireAuthRuntime().client.getValidAccountStatus(),
+        ),
+      syncBindingLifecycle: async (account) => {
+        if (officeRelayPersistenceAvailable) {
+          await syncOfficeRelaySession(
+            account,
+            officeRelayPersistenceAvailable,
+            officeRelayLifecycle,
+            officeRelay,
+            () => expectedEpoch === officeRelayActivationFence.snapshot(),
+          )
+          if (expectedEpoch !== officeRelayActivationFence.snapshot())
+            officeRelay?.suspend('auth_required')
+          return
+        }
+        await fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'auth_required',
+        })
+      },
+      fallbackToOrdinary: () =>
+        fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'binding_lifecycle',
+        }),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   })
 
   app.setAccessibilitySupportEnabled(true)
@@ -2688,7 +3331,7 @@ app.whenReady().then(async () => {
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
-  initAutoUpdater(() => shellWindow, currentUpdateChannel())
+  if (!iterationIdentity) initAutoUpdater(() => shellWindow, currentUpdateChannel())
 
   const openedLaunchPath = pendingLaunchPath ? openDocumentPath(pendingLaunchPath) : false
   if (!openedLaunchPath && !restoredActive) tabManager?.openHomeTab()
@@ -2703,13 +3346,27 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  if (presentationRetentionTimer) clearInterval(presentationRetentionTimer)
-  // No close prompt may fall through to "Save" during shutdown
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  officeBridge?.revokeAll()
-  officeBridge?.shutdown()
-  officeRelay?.revoke('shutdown')
-  void officeBridgeServer?.stop()
+const beforeQuitBarrier = createBeforeQuitBarrier({
+  cleanup: async () => {
+    if (presentationRetentionTimer) clearInterval(presentationRetentionTimer)
+    // No close prompt may fall through to "Save" during shutdown.
+    markSheetsShuttingDown()
+    stopSheetsSidecar()
+    officeBridge?.revokeAll()
+    officeBridge?.shutdown()
+    officeRelayActivationFence.lock()
+    shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
+    const cleanupResults = await Promise.allSettled([
+      Promise.resolve().then(() => enhancedModeComponentController?.close()),
+      Promise.resolve().then(() => codexRuntime?.shutdown()),
+      Promise.resolve().then(() => pcCodexHosts?.close()),
+      Promise.resolve().then(() => officeBridgeServer?.stop()),
+    ])
+    if (cleanupResults.some((result) => result.status === 'rejected')) {
+      throw new Error('quit_cleanup_failed')
+    }
+  },
+  quit: () => app.quit(),
+  diagnostics: (code) => console.warn('[enhanced-mode]', code),
 })
+app.on('before-quit', beforeQuitBarrier)

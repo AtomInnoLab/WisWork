@@ -81,7 +81,7 @@ describe('fill / color-mod / background parsing', () => {
   const theme: any = { colors: { accent1: '#0000FF', lt1: '#FFFFFF', dk1: '#000000' } }
 
   const slideWith = (bodyShapes: string, bg = '') =>
-    '<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r"><p:cSld>' +
+    '<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld>' +
     bg +
     `<p:spTree><p:nvGrpSpPr/><p:grpSpPr/>${bodyShapes}</p:spTree></p:cSld></p:sld>`
 
@@ -161,7 +161,7 @@ describe('fill / color-mod / background parsing', () => {
 
   it('background inherits from master when slide has none', () => {
     const masterBg =
-      '<p:sldMaster><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="ABCDEF"/></a:solidFill></p:bgPr></p:bg></p:cSld></p:sldMaster>'
+      '<p:sldMaster xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="ABCDEF"/></a:solidFill></p:bgPr></p:bg></p:cSld></p:sldMaster>'
     const slide = parseSlide({
       path: 'ppt/slides/slide1.xml',
       slideXml: slideWith(''),

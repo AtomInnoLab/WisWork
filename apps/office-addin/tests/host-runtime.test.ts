@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { acpPresentationStage } from '@wiswork/agent-harness'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
+import type { ElevatedOfficeAdapter } from '../src/skills/shared/elevated-office-program.js'
 
 const inventories = {
   word: [
@@ -53,6 +54,7 @@ const inventories = {
     'release_existing_presentation_change',
     'capture_existing_presentation_change',
     'record_existing_presentation_change_review',
+    'ask_clarification',
     'bash',
     'add_slide_ir_objects',
     'check_presentation_baseline',
@@ -62,7 +64,9 @@ const inventories = {
     'edit_slide_master_xml',
     'edit_slide_xml',
     'execute_office_js',
+    'get_presentation_state',
     'list_slide_shapes',
+    'plan_deck',
     'read',
     'read_presentation_baseline',
     'read_presentation_baseline_chart_source',
@@ -72,7 +76,9 @@ const inventories = {
     'read_presentation_baseline_rich_text',
     'read_presentation_baseline_page',
     'read_slide_text',
+    'review_slide_screenshot',
     'screenshot_slide',
+    'set_slide_background',
     'verify_slides',
   ],
 } as const
@@ -99,6 +105,76 @@ describe('host runtime composition', () => {
     }
   })
 
+  it('keeps a pending semantic proposal when already-disabled elevated tools are disabled again', async () => {
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      presentation: {
+        available: () => true,
+        request: vi.fn(),
+        documentId: async () => 'document-1',
+        lastProject: () => undefined,
+        rememberProject: async () => undefined,
+      },
+    })
+    runtime.disableElevatedOffice()
+    const proposals = runtime.proposals as StructuredProposalController
+    const execute = vi.fn()
+    const proposal = proposals.propose({
+      operation: 'edit_slide_text',
+      title: 'Update slide title',
+      preview: { text: 'Renewed title' },
+      impact: { host: 'powerpoint', targets: ['slide_1'], count: 1 },
+      fingerprint: 'slide_1_revision',
+      validate: () => true,
+      execute,
+    })
+    const decision = proposals.waitForDecision(proposal.id)
+    runtime.disableElevatedOffice()
+    expect(proposals.pending()?.id).toBe(proposal.id)
+    await vi.waitFor(() => expect(proposals.pending()?.lockReview).toBeUndefined())
+    await proposals.confirm(proposal.id)
+    await expect(decision).resolves.toEqual({ status: 'confirmed' })
+    expect(execute).toHaveBeenCalledOnce()
+    runtime.dispose()
+  })
+
+  it('advertises the distinct raw tool only when an Enhanced adapter is supplied', () => {
+    const standard = createOfficeHostRuntime('word')
+    expect(standard.skill.tools.map((tool) => tool.name)).not.toContain('propose_raw_office_edit')
+    const adapter: ElevatedOfficeAdapter = {
+      host: 'word',
+      captureAuthority: () => ({
+        activeMode: 'enhanced',
+        signedIn: true,
+        paired: true,
+        hostEnabled: true,
+        rawOfficeEnabled: true,
+        rawOfficeJsEnabled: true,
+        rawOfficeOoxmlEnabled: true,
+        documentId: 'doc_AAAAAAAAAAAAAAAA',
+        sessionId: 'ses_AAAAAAAAAAAAAAAA',
+        generation: 1,
+        revision: 'rev_AAAAAAAAAAAAAAAA',
+      }),
+      snapshot: async () => ({ id: 'history_AAAAAAAAAAAAAAAA' }),
+      validateSnapshot: async () => true,
+      execute: async () => undefined,
+      readback: async () => ({ verified: true }),
+      rollback: async () => undefined,
+    }
+    const names = createOfficeHostRuntime('word', {
+      elevatedOfficeAdapter: adapter,
+    }).skill.tools.map((tool) => tool.name)
+    expect(names).toContain('execute_office_js')
+    expect(names).toContain('propose_raw_office_edit')
+    standard.enableElevatedOffice(adapter.captureAuthority)
+    expect(standard.skill.tools.map((tool) => tool.name)).toContain('propose_raw_office_edit')
+    const logout = vi.spyOn(standard.proposals, 'logout')
+    standard.disableElevatedOffice()
+    expect(standard.skill.tools.map((tool) => tool.name)).not.toContain('propose_raw_office_edit')
+    expect(logout).toHaveBeenCalledOnce()
+    standard.disableElevatedOffice()
+    expect(logout).toHaveBeenCalledOnce()
+  })
   it.each(Object.entries(inventories))(
     'composes shared tools with only the %s host skill',
     (host, expected) => {
@@ -130,6 +206,19 @@ describe('host runtime composition', () => {
     expect(runtime.vfs.list('/home/skills')).toEqual([])
     expect(runtime.skills.list()).toEqual([])
     expect(runtime.proposals.pending()).toBeUndefined()
+  })
+
+  it('inherits quarantine across session clearing and releases it only on document disposal', () => {
+    const runtime = createOfficeHostRuntime('word')
+    const proposals = runtime.proposals as StructuredProposalController
+    proposals.quarantine({ sessionId: 'session-a', generation: 1 })
+
+    runtime.clearSession()
+    expect(proposals.isQuarantined()).toBe(true)
+    runtime.disableElevatedOffice()
+    expect(proposals.isQuarantined()).toBe(true)
+    runtime.dispose()
+    expect(proposals.isQuarantined()).toBe(false)
   })
 
   it('ignores an upload that settles after the runtime is disposed', async () => {

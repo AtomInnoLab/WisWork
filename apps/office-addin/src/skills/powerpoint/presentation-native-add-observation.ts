@@ -192,7 +192,7 @@ function textMatches(
   expected: string,
   operation: Pick<
     Extract<NativeAddOperation, { op: 'add_text_box' }>,
-    'fontFace' | 'fontSize' | 'color' | 'bold' | 'align'
+    'fontFace' | 'fontSize' | 'color' | 'bold' | 'italic' | 'align'
   >,
 ): void {
   requireProof(
@@ -263,7 +263,9 @@ function textMatches(
               'a:ea',
               'a:cs',
             ]) &&
-              [undefined, '0', 'false'].includes(properties?.['@_i']) &&
+              (operation.italic === true ? ['1', 'true'] : [undefined, '0', 'false']).includes(
+                properties?.['@_i'],
+              ) &&
               [undefined, 'none'].includes(properties?.['@_u']) &&
               [undefined, 'noStrike'].includes(properties?.['@_strike']),
           )
@@ -438,6 +440,7 @@ export async function observePowerPointNativeAdd(
               'fontSize',
               'color',
               'bold',
+              'italic',
               'align',
               'margin',
               'verticalAlignment',
@@ -494,6 +497,7 @@ export async function observePowerPointNativeAdd(
       if (operation.op === 'add_text_box')
         requireProof(
           (operation.bold === undefined || typeof operation.bold === 'boolean') &&
+            (operation.italic === undefined || typeof operation.italic === 'boolean') &&
             (operation.align === undefined ||
               ['left', 'center', 'right'].includes(operation.align)) &&
             (operation.verticalAlignment === undefined ||

@@ -63,8 +63,43 @@ import {
   type SlideBundle,
 } from './slide-transfer'
 import { moveSlide } from './sections'
+import {
+  collectDeckCreationIds,
+  collectSlideCreationIds,
+  ensureCreationIdsInXmlBatch,
+  mintUniqueCreationIds,
+  remintCreationIdsInXml,
+  remintCreationIdsInXmlBatch,
+  setCreationIdInElementXml,
+  type CreationIdFactory,
+} from './durable-targets'
 
 export * from './types'
+export {
+  CREATION_ID_EXTENSION_URI,
+  CREATION_ID_NAMESPACE,
+  collectCreationIdsInXml,
+  collectDeckCreationIds,
+  collectSlideCreationIds,
+  defaultCreationIdFactory,
+  ensureElementCreationId,
+  ensureCreationIdsInXmlBatch,
+  fingerprintSlide,
+  fingerprintSlideElement,
+  fingerprintPresentation,
+  mintCreationId,
+  mintUniqueCreationIds,
+  normalizeCreationId,
+  readCreationId,
+  remintCreationIdsInXml,
+  remintCreationIdsInXmlBatch,
+  resolvePresentationContainer,
+  resolvePresentationTarget,
+  setCreationIdInElementXml,
+  type CreationIdFactory,
+  type OpenedPresentationForFingerprint,
+  type PresentationTargetResolution,
+} from './durable-targets'
 export {
   animClassOf,
   buildTimingXml,
@@ -116,6 +151,7 @@ export {
   addElement,
   addPicture,
   deleteElement,
+  deleteElementWithCleanup,
   buildSpXml,
   buildTableXml,
   buildGrpSpXml,
@@ -133,7 +169,12 @@ export {
   type AlignRect,
 } from './align'
 export { createBlankPptx } from './blank'
-export { promoteSlideBackground, isBackgroundLikeElement } from './background-promote'
+export {
+  promoteSlideBackground,
+  isBackgroundLikeElement,
+  hasExplicitSlideBackground,
+  recolorFullBleedBackdrops,
+} from './background-promote'
 export {
   applyThemeToArchive,
   buildColorMap,
@@ -911,14 +952,24 @@ function registerNewSlide(opened: OpenedPptx, sourceIndex: number, newPath: stri
 export function duplicateSlide(
   opened: OpenedPptx,
   sourceIndex: number,
-  opts?: { clearText?: boolean },
+  opts?: { clearText?: boolean; creationIdFactory?: CreationIdFactory },
 ): Slide | null {
   const { deck, archive } = opened
   const src = deck.slides[sourceIndex]
   if (!src) return null
 
   const newPath = nextSlidePath(archive)
-  archive.entries.set(newPath, Buffer.from(patchSlideXml(src), 'utf8'))
+  archive.entries.set(
+    newPath,
+    Buffer.from(
+      remintCreationIdsInXml(
+        patchSlideXml(src),
+        opts?.creationIdFactory,
+        collectDeckCreationIds(deck),
+      ),
+      'utf8',
+    ),
+  )
 
   const srcRels = archive.readText(relsPathFor(src.path))
   if (srcRels) {
@@ -961,10 +1012,15 @@ export function pasteSlide(
   opened: OpenedPptx,
   afterIndex: number,
   bundle: SlideBundle,
-  opts?: { keepSourceFormatting?: boolean },
+  opts?: { keepSourceFormatting?: boolean; creationIdFactory?: CreationIdFactory },
 ): Slide | null {
   const { deck, archive } = opened
   if (deck.slides.length === 0) return null
+  const remintedSlideXml = remintCreationIdsInXml(
+    bundle.slideXml,
+    opts?.creationIdFactory,
+    collectDeckCreationIds(deck),
+  )
   const anchorIndex = Math.min(Math.max(afterIndex, -1), deck.slides.length - 1)
   const neighbour = deck.slides[anchorIndex] ?? deck.slides[0]
   const layoutPath =
@@ -974,7 +1030,7 @@ export function pasteSlide(
 
   const newPath = nextSlidePath(archive)
   const relsXml = materializeSlideBundle(archive, bundle, newPath, layoutPath)
-  archive.entries.set(newPath, Buffer.from(bundle.slideXml, 'utf8'))
+  archive.entries.set(newPath, Buffer.from(remintedSlideXml, 'utf8'))
   archive.entries.set(relsPathFor(newPath), Buffer.from(relsXml, 'utf8'))
 
   if (anchorIndex < 0) {
@@ -1073,6 +1129,7 @@ const MIME_BY_EXT: Record<string, string> = {
 export async function mergeSlideFromPptx(
   target: OpenedPptx,
   sourceBytes: Uint8Array,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): Promise<Slide | null> {
   const { deck, archive } = target
   const src = await PackageArchive.open(sourceBytes)
@@ -1082,6 +1139,12 @@ export async function mergeSlideFromPptx(
 
   let slideXml = src.readText(srcSlidePath)
   if (slideXml == null) return null
+  // Copied source shapes are new target-deck objects and must never retain shared identities.
+  slideXml = remintCreationIdsInXml(
+    slideXml,
+    identity?.creationIdFactory,
+    collectDeckCreationIds(deck),
+  )
   const srcRels = src.readRels(srcSlidePath)
 
   // Relative Target of any existing target slide's slideLayout (the appended slide reuses the same layout)
@@ -1169,8 +1232,15 @@ export function insertSlideWithLayout(
   opened: OpenedPptx,
   sourceIndex: number,
   layoutPath: string,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): Slide | null {
-  const newPath = prepareInsertSlideWithLayout(opened.archive, opened.deck, sourceIndex, layoutPath)
+  const newPath = prepareInsertSlideWithLayout(
+    opened.archive,
+    opened.deck,
+    sourceIndex,
+    layoutPath,
+    identity,
+  )
   if (!newPath) return null
   const slide = parseSlideFromArchive(opened.archive, newPath)
   if (!slide) return null
@@ -1398,6 +1468,7 @@ export function setSlideLayout(
   opened: OpenedPptx,
   slideIndex: number,
   layoutPath: string,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): Slide | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide) return null
@@ -1427,8 +1498,6 @@ export function setSlideLayout(
       `<Relationship Id="rId${maxRid + 1}" Type="${LAYOUT_REL_TYPE}" Target="${escapeXmlAttr(relTarget)}"/></Relationships>`,
     )
   }
-  opened.archive.entries.set(relsPath, Buffer.from(next, 'utf8'))
-
   const layoutPhs = parseLayoutPlaceholders(opened.archive.readText(layoutPath) ?? '')
   const taken = new Set<string>()
   let maxId = 1
@@ -1443,12 +1512,14 @@ export function setSlideLayout(
       maxId = Math.max(maxId, Number(idm[1]))
   }
   const missing = layoutPhs.filter((ph) => !taken.has(phSlotKey(ph.type, ph.idx)))
+  const missingXmls = ensureCreationIdsInXmlBatch(
+    missing.map((ph, i) => placeholderSpXml(ph, maxId + 1 + i)),
+    identity?.creationIdFactory,
+    collectSlideCreationIds(slide),
+  )
+  opened.archive.entries.set(relsPath, Buffer.from(next, 'utf8'))
   if (missing.length) {
-    const r = appendRawElements(
-      opened,
-      slideIndex,
-      missing.map((ph, i) => placeholderSpXml(ph, maxId + 1 + i)),
-    )
+    const r = appendRawElements(opened, slideIndex, missingXmls, { preserveCreationIds: true })
     if (r) return r.slide
   }
   return materializeSlide(opened, slideIndex)
@@ -1542,11 +1613,15 @@ export function appendRawElements(
   opened: OpenedPptx,
   slideIndex: number,
   xmls: string[],
+  identity?: { preserveCreationIds?: boolean; creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementIds: string[] } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide || !xmls.length) return null
   const before = slide.elements.length
-  for (const xml of xmls) {
+  const preparedXmls = identity?.preserveCreationIds
+    ? ensureCreationIdsInXmlBatch(xmls, identity?.creationIdFactory, collectSlideCreationIds(slide))
+    : remintCreationIdsInXmlBatch(xmls, identity?.creationIdFactory, collectSlideCreationIds(slide))
+  for (const xml of preparedXmls) {
     slide.elements.push({
       id: `rawnew_${slide.elements.length}`,
       type: 'passthrough',
@@ -1566,10 +1641,13 @@ export function addTable(
   opened: OpenedPptx,
   slideIndex: number,
   opts: NewTableOptions,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide) return null
-  const r = appendRawElements(opened, slideIndex, [buildTableXml(slide, opts)])
+  const r = appendRawElements(opened, slideIndex, [buildTableXml(slide, opts, identity)], {
+    preserveCreationIds: true,
+  })
   return r ? { slide: r.slide, elementId: r.elementIds[r.elementIds.length - 1]! } : null
 }
 
@@ -2816,6 +2894,7 @@ export function pasteElements(
   slideIndex: number,
   items: ElementClipboardItem[],
   shiftEmu: { dx: number; dy: number },
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementIds: string[] } | null {
   const { archive, deck } = opened
   const slide = deck.slides[slideIndex]
@@ -2836,7 +2915,7 @@ export function pasteElements(
   }
 
   let nextId = nextCNvPrId(slide)
-  const xmls = items.map((item) => {
+  const relatedXmls = items.map((item) => {
     let xml = item.xml
     for (const rel of item.rels) {
       const key = `${rel.type} ${rel.target}`
@@ -2868,9 +2947,14 @@ export function pasteElements(
     )
     return xml
   })
+  const xmls = remintCreationIdsInXmlBatch(
+    relatedXmls,
+    identity?.creationIdFactory,
+    collectSlideCreationIds(slide),
+  )
 
   if (relsDirty) archive.entries.set(relsPath, Buffer.from(relsXml, 'utf8'))
-  return appendRawElements(opened, slideIndex, xmls)
+  return appendRawElements(opened, slideIndex, xmls, { preserveCreationIds: true })
 }
 
 // ── Slide transitions ───────────────────────────────────────────────────
@@ -2941,6 +3025,7 @@ export function groupElements(
   opened: OpenedPptx,
   slideIndex: number,
   sourceIds: string[],
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; groupId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide || sourceIds.length < 2) return null
@@ -2953,6 +3038,25 @@ export function groupElements(
   if (targets.length < 2) return null
   if (targets.some((e) => !GROUPABLE.has(e.type))) return null
 
+  // Preallocate every missing child id plus the new group id before any XML/model mutation.
+  const missing = targets.filter((target) => !target.creationId)
+  const plannedIds = mintUniqueCreationIds(
+    missing.length + 1,
+    collectSlideCreationIds(slide),
+    identity?.creationIdFactory,
+  )
+  const patchedChildren = missing.map((target, index) => ({
+    target,
+    id: plannedIds[index]!,
+    xml: setCreationIdInElementXml(target.anchor.originalXml, plannedIds[index]!),
+  }))
+  for (const patched of patchedChildren) {
+    patched.target.anchor.originalXml = patched.xml
+    patched.target.creationId = patched.id
+  }
+  if (patchedChildren.length) slide.structureDirty = true
+  const groupCreationId = plannedIds[plannedIds.length - 1]!
+
   // Compute the bounding box
   const bbox = calcBoundingBox(targets)
 
@@ -2960,14 +3064,16 @@ export function groupElements(
   const childrenXml = targets.map((e) => patchedElementXml(e)).join('')
 
   // Build the grpSp XML
-  const grpXml = buildGrpSpXml(slide, bbox, childrenXml)
+  const grpXml = buildGrpSpXml(slide, bbox, childrenXml, {
+    creationIdFactory: () => groupCreationId,
+  })
 
   // Remove the selected elements from the current slide
   const idSet = new Set(sourceIds)
   slide.elements = slide.elements.filter((e) => !idSet.has(e.id))
 
   // Append the grpSp and reparse
-  const result = appendRawElements(opened, slideIndex, [grpXml])
+  const result = appendRawElements(opened, slideIndex, [grpXml], { preserveCreationIds: true })
   if (!result) return null
 
   return { slide: result.slide, groupId: result.elementIds[result.elementIds.length - 1]! }
@@ -3050,7 +3156,7 @@ export function ungroupElement(
     return materializeSlide(opened, slideIndex)
   }
 
-  const result = appendRawElements(opened, slideIndex, liftedXmls)
+  const result = appendRawElements(opened, slideIndex, liftedXmls, { preserveCreationIds: true })
   return result?.slide ?? null
 }
 

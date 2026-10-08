@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { LATEX_CHANNELS, type LatexApi, type UiTheme } from '../shared/ipc.js'
+import { createPcHostCodexApi } from '@wiswork/agent-runtime'
 
 const api: LatexApi = {
   getTheme: () => ipcRenderer.invoke('app:get-theme'),
@@ -82,3 +83,4 @@ const api: LatexApi = {
 }
 
 contextBridge.exposeInMainWorld('latexApi', api)
+contextBridge.exposeInMainWorld('codexRuntime', createPcHostCodexApi(ipcRenderer))

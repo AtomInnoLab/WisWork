@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import appIcon from './assets/app-icon.png'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
@@ -10,23 +10,38 @@ import type {
   AccountStatus,
   AppTheme,
   HomeApi,
+  ImageSearchConfigStatus,
   LatexRecentProjectEntry,
   OfficePairingRequest,
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
+  OfficeRelayStatus,
 } from '../../shared/home-api'
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
 import { LoginDiagnostic } from './LoginDiagnostic'
 import { mergeOfficePairings } from './office-pairings'
+import {
+  initialProjectMutationState,
+  projectMutationReducer,
+  type ProjectMutationOperation,
+} from './project-mutation-state'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
+import type {
+  EnhancedDiagnosticsSummary,
+  EnhancedModeApi,
+  EnhancedModeStatus,
+  EnhancedSelfCheckPublicResult,
+} from '../../shared/enhanced-mode-api'
+import { enhancedModeView, selectEnhancedMode } from './enhanced-mode-view'
 
 declare global {
   interface Window {
     aiOffice: HomeApi
     aiOfficeProject?: ProjectHomeApi
+    aiOfficeEnhancedMode?: EnhancedModeApi
   }
 }
 
@@ -72,6 +87,36 @@ export function accountPresentation(status: AccountStatus | null, loggedInLabel:
   return { initial, name, email }
 }
 
+export function officeConnectionCopy(language: string, status: OfficeRelayStatus) {
+  const chinese = language === 'zh' || language === 'zh-TW'
+  const connected = status === 'paired'
+  const pending =
+    status === 'connecting' ||
+    status === 'claiming' ||
+    status === 'awaiting_approval' ||
+    status === 'waiting_for_office'
+  return {
+    label: chinese ? '连接 Office' : 'Connect Office',
+    detail: connected
+      ? chinese
+        ? '已连接'
+        : 'Connected'
+      : pending
+        ? chinese
+          ? '正在连接…'
+          : 'Connecting…'
+        : status === 'disconnected:invalid_code'
+          ? chinese
+            ? '代码已失效，请刷新 Office 中的 6 位代码后重试'
+            : 'The code expired. Refresh the 6-digit code in Office and try again.'
+          : chinese
+            ? '输入 Office 中显示的 6 位代码'
+            : 'Enter the 6-digit code shown in Office',
+    action: chinese ? '连接' : 'Connect',
+    connected,
+  }
+}
+
 export function AccountMenuIdentity({
   status,
   loggedInLabel,
@@ -92,6 +137,106 @@ export function AccountMenuIdentity({
         </span>
       </span>
     </div>
+  )
+}
+
+export function ImageSearchSettings({ language }: { language: string }) {
+  const chinese = language === 'zh' || language === 'zh-TW'
+  const [status, setStatus] = useState<ImageSearchConfigStatus | null>(null)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    void window.aiOffice
+      .imageSearchKeyStatus()
+      .then(setStatus)
+      .catch(() => setNotice(chinese ? '无法读取配置状态' : 'Could not read configuration status'))
+  }, [chinese])
+
+  const run = async (action: () => Promise<ImageSearchConfigStatus>) => {
+    setBusy(true)
+    setNotice('')
+    try {
+      setStatus(await action())
+      setKey('')
+    } catch {
+      setNotice(chinese ? '操作失败，请重试' : 'Operation failed; try again')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="image-search-settings" aria-label="SerpApi image search">
+      <div className="image-search-settings-title">
+        <span>SerpApi</span>
+        <span className={status?.configured ? 'diagnostic-ok' : ''}>
+          {status?.configured
+            ? status.source === 'environment'
+              ? chinese
+                ? '已通过环境变量配置'
+                : 'Configured by environment'
+              : chinese
+                ? '已配置'
+                : 'Configured'
+            : chinese
+              ? '未配置'
+              : 'Not configured'}
+        </span>
+      </div>
+      <input
+        type="password"
+        autoComplete="new-password"
+        aria-label={chinese ? 'SerpApi 密钥' : 'SerpApi key'}
+        placeholder={chinese ? '输入新密钥' : 'Enter a new key'}
+        value={key}
+        disabled={busy}
+        onChange={(event) => setKey(event.target.value)}
+      />
+      <div className="image-search-settings-actions">
+        <button
+          data-action="save"
+          disabled={busy || !key.trim()}
+          onClick={() => void run(() => window.aiOffice.saveImageSearchKey(key))}
+        >
+          {chinese ? '保存' : 'Save'}
+        </button>
+        <button
+          data-action="test"
+          disabled={busy || !status?.configured}
+          onClick={() => {
+            setBusy(true)
+            setNotice('')
+            void window.aiOffice
+              .testImageSearchKey()
+              .then((result) =>
+                setNotice(
+                  result.ok
+                    ? chinese
+                      ? '连接成功'
+                      : 'Connection successful'
+                    : chinese
+                      ? '连接失败'
+                      : 'Connection failed',
+                ),
+              )
+              .catch(() => setNotice(chinese ? '连接失败' : 'Connection failed'))
+              .finally(() => setBusy(false))
+          }}
+        >
+          {chinese ? '测试' : 'Test'}
+        </button>
+        <button
+          data-action="clear"
+          disabled={busy || status?.source !== 'stored'}
+          onClick={() => void run(() => window.aiOffice.clearImageSearchKey())}
+        >
+          {chinese ? '清除' : 'Clear'}
+        </button>
+      </div>
+      {notice && <p role="status">{notice}</p>}
+    </section>
   )
 }
 
@@ -165,7 +310,7 @@ const FILTERS: { key: string; label: StringKey }[] = [
   { key: 'pdf', label: 'filterPdf' },
 ]
 
-function ThemeSwitch() {
+function ThemeSwitch({ language }: { language: string }) {
   const [theme, setTheme] = useState<AppTheme>(() =>
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   )
@@ -192,7 +337,7 @@ function ThemeSwitch() {
         onClick={() => choose('light')}
       >
         <span aria-hidden="true">☀</span>
-        Light
+        {language === 'zh' || language === 'zh-TW' ? '浅色' : 'Light'}
       </button>
       <button
         type="button"
@@ -201,7 +346,7 @@ function ThemeSwitch() {
         onClick={() => choose('dark')}
       >
         <span aria-hidden="true">☾</span>
-        Dark
+        {language === 'zh' || language === 'zh-TW' ? '深色' : 'Dark'}
       </button>
     </div>
   )
@@ -216,7 +361,7 @@ interface ProjectPanelProps {
   onRefresh: () => void
 }
 
-function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPanelProps) {
+export function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPanelProps) {
   const { t } = useI18n()
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
@@ -225,6 +370,46 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
   const [projMenu, setProjMenu] = useState<{ id: string; top: number; right: number } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
   const newInputRef = useRef<HTMLInputElement>(null)
+  const [mutation, dispatchMutation] = useReducer(
+    projectMutationReducer,
+    initialProjectMutationState,
+  )
+  const mutationRequestId = useRef(0)
+  const mutationBusy = useRef(false)
+  const mounted = useRef(true)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      mutationRequestId.current += 1
+      mutationBusy.current = false
+    }
+  }, [])
+
+  const runMutation = async (
+    operation: ProjectMutationOperation,
+    request: () => Promise<unknown>,
+    onSuccess: () => void,
+  ) => {
+    if (mutationBusy.current) return
+    mutationBusy.current = true
+    const requestId = ++mutationRequestId.current
+    dispatchMutation({ type: 'start', requestId, operation })
+    try {
+      await request()
+    } catch {
+      if (mounted.current && requestId === mutationRequestId.current) {
+        dispatchMutation({ type: 'fail', requestId, operation })
+      }
+      return
+    } finally {
+      if (requestId === mutationRequestId.current) mutationBusy.current = false
+    }
+    if (!mounted.current || requestId !== mutationRequestId.current) return
+    dispatchMutation({ type: 'succeed', requestId })
+    onSuccess()
+  }
 
   useEffect(() => {
     if (creating && newInputRef.current) newInputRef.current.focus()
@@ -249,21 +434,39 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 
   const commitCreate = async () => {
     const name = newName.trim()
-    setCreating(false)
-    setNewName('')
     if (!name) return
-    await window.aiOfficeProject?.createProject(name)
-    onRefresh()
+    await runMutation(
+      'create',
+      async () => {
+        const api = window.aiOfficeProject
+        if (!api) throw new Error('project_api_unavailable')
+        await api.createProject(name)
+      },
+      () => {
+        setCreating(false)
+        setNewName('')
+        onRefresh()
+      },
+    )
   }
 
   const commitRename = async () => {
     if (!renaming) return
     const name = renaming.value.trim()
     const id = renaming.id
-    setRenaming(null)
     if (!name) return
-    await window.aiOfficeProject?.renameProject(id, name)
-    onRefresh()
+    await runMutation(
+      'rename',
+      async () => {
+        const api = window.aiOfficeProject
+        if (!api) throw new Error('project_api_unavailable')
+        await api.renameProject(id, name)
+      },
+      () => {
+        setRenaming(null)
+        onRefresh()
+      },
+    )
   }
 
   // in-app confirm dialog (same style as the delete-files modal), not window.confirm
@@ -276,21 +479,30 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 
   const confirmDeleteNow = async () => {
     const id = confirmDeleteId
-    setConfirmDeleteId(null)
     if (!id) return
-    await window.aiOfficeProject?.deleteProject(id)
-    if (selectedId === id) onSelect(null)
-    onRefresh()
+    await runMutation(
+      'delete',
+      async () => {
+        const api = window.aiOfficeProject
+        if (!api) throw new Error('project_api_unavailable')
+        await api.deleteProject(id)
+      },
+      () => {
+        setConfirmDeleteId(null)
+        if (selectedId === id) onSelect(null)
+        onRefresh()
+      },
+    )
   }
 
   useEffect(() => {
     if (!confirmDeleteId) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setConfirmDeleteId(null)
+      if (e.key === 'Escape' && mutation.operation !== 'delete') setConfirmDeleteId(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [confirmDeleteId])
+  }, [confirmDeleteId, mutation.operation])
 
   return (
     <div className="proj-panel">
@@ -301,6 +513,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
           title={t('newProject')}
           onClick={() => setCreating(true)}
           aria-label={t('newProject')}
+          disabled={mutation.activeRequestId !== null}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path
@@ -320,6 +533,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
             className="proj-rename-input"
             placeholder={t('projectName')}
             value={newName}
+            disabled={mutation.operation === 'create'}
             onChange={(e) => setNewName(e.target.value)}
             onBlur={() => void commitCreate()}
             onKeyDown={(e) => {
@@ -330,6 +544,12 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
               }
             }}
           />
+        </div>
+      )}
+
+      {mutation.errorCode && (
+        <div className="proj-operation-error" role="alert">
+          {t('projectOperationFailed')} [{mutation.errorCode}]
         </div>
       )}
 
@@ -362,6 +582,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                   <input
                     className="proj-rename-input inline"
                     value={renaming.value}
+                    disabled={mutation.operation === 'rename'}
                     autoFocus
                     onFocus={(e) => e.target.select()}
                     onClick={(e) => e.stopPropagation()}
@@ -389,6 +610,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                     className="proj-more-btn"
                     aria-label={t('projMoreActions', { name: proj.name })}
                     aria-expanded={projMenu?.id === proj.id}
+                    disabled={mutation.activeRequestId !== null}
                     onClick={(e) => {
                       e.stopPropagation()
                       if (projMenu?.id === proj.id) {
@@ -417,6 +639,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                     >
                       <button
                         role="menuitem"
+                        disabled={mutation.activeRequestId !== null}
                         onClick={(e) => {
                           e.stopPropagation()
                           setProjMenu(null)
@@ -429,6 +652,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                       <button
                         role="menuitem"
                         className="danger"
+                        disabled={mutation.activeRequestId !== null}
                         onClick={(e) => {
                           e.stopPropagation()
                           doDelete(proj.id)
@@ -450,7 +674,12 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
           // locale string is "title?\nbody" — split it across the dialog
           const [confirmTitle, ...confirmBody] = t('deleteProjectConfirm').split('\n')
           return (
-            <div className="modal-overlay" onClick={() => setConfirmDeleteId(null)}>
+            <div
+              className="modal-overlay"
+              onClick={() => {
+                if (mutation.operation !== 'delete') setConfirmDeleteId(null)
+              }}
+            >
               <div
                 className="modal"
                 role="dialog"
@@ -464,11 +693,16 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                   <button
                     className="btn btn-secondary"
                     autoFocus
+                    disabled={mutation.operation === 'delete'}
                     onClick={() => setConfirmDeleteId(null)}
                   >
                     {t('cancel')}
                   </button>
-                  <button className="btn btn-danger" onClick={() => void confirmDeleteNow()}>
+                  <button
+                    className="btn btn-danger"
+                    disabled={mutation.operation === 'delete'}
+                    onClick={() => void confirmDeleteNow()}
+                  >
                     {t('delete')}
                   </button>
                 </div>
@@ -533,10 +767,19 @@ function AccountEntry() {
   const langCloseTimer = useRef<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [officeRelayStatus, setOfficeRelayStatus] = useState('disconnected')
+  const [enhancedStatus, setEnhancedStatus] = useState<EnhancedModeStatus | null>(null)
+  const [enhancedBusy, setEnhancedBusy] = useState(false)
+  const [enhancedError, setEnhancedError] = useState(false)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [diagnostics, setDiagnostics] = useState<EnhancedDiagnosticsSummary | null>(null)
+  const [selfCheck, setSelfCheck] = useState<EnhancedSelfCheckPublicResult | null>(null)
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
+  const [diagnosticsNotice, setDiagnosticsNotice] = useState('')
+  const [officeRelayStatus, setOfficeRelayStatus] = useState<OfficeRelayStatus>('disconnected')
   const [officeRelayCode, setOfficeRelayCode] = useState('')
   const [officeRelayBusy, setOfficeRelayBusy] = useState(false)
   const [officeRelayError, setOfficeRelayError] = useState('')
+  const [officeConnectionOpen, setOfficeConnectionOpen] = useState(false)
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -552,6 +795,10 @@ function AccountEntry() {
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
+    void window.aiOfficeEnhancedMode
+      ?.status()
+      .then((value) => alive && setEnhancedStatus(value))
+      .catch(() => alive && setEnhancedError(true))
     void window.aiOffice.officeRelayStatus().then((value) => {
       if (alive) setOfficeRelayStatus(value)
     })
@@ -655,6 +902,67 @@ function AccountEntry() {
     setLangFly(null)
   }
 
+  const enhancedView = enhancedStatus ? enhancedModeView(enhancedStatus, lang) : null
+  const officeCopy = officeConnectionCopy(lang, officeRelayStatus)
+  const runEnhancedAction = (remove = false, targetMode?: 'standard' | 'enhanced') => {
+    if (!enhancedStatus || !window.aiOfficeEnhancedMode || enhancedBusy) return
+    const action = remove
+      ? 'remove'
+      : targetMode === 'standard'
+        ? enhancedStatus.requestedAgentRuntime === 'enhanced'
+          ? 'disable'
+          : 'none'
+        : targetMode === 'enhanced'
+          ? enhancedStatus.requestedAgentRuntime === 'standard'
+            ? enhancedView?.action
+            : 'none'
+          : enhancedView?.action
+    if (!action || action === 'none') return
+    if (
+      action === 'remove' &&
+      !window.confirm(
+        lang === 'zh' || lang === 'zh-TW'
+          ? '移除增强模式可选组件？以后可以重新下载。'
+          : 'Remove the optional Enhanced mode component? You can download it again later.',
+      )
+    )
+      return
+    setEnhancedBusy(true)
+    setEnhancedError(false)
+    const request = targetMode
+      ? selectEnhancedMode(window.aiOfficeEnhancedMode, enhancedStatus, targetMode)
+      : action === 'install'
+        ? window.aiOfficeEnhancedMode.install()
+        : action === 'remove'
+          ? window.aiOfficeEnhancedMode.remove()
+          : window.aiOfficeEnhancedMode.setMode(action === 'enable' ? 'enhanced' : 'standard')
+    void request
+      .then(setEnhancedStatus)
+      .catch(() => setEnhancedError(true))
+      .finally(() => setEnhancedBusy(false))
+  }
+
+  const refreshDiagnostics = () => {
+    if (!window.aiOfficeEnhancedMode) return
+    setDiagnosticsBusy(true)
+    setDiagnosticsNotice('')
+    void window.aiOfficeEnhancedMode
+      .diagnostics()
+      .then(setDiagnostics)
+      .catch(() =>
+        setDiagnosticsNotice(
+          lang === 'zh' || lang === 'zh-TW' ? '无法读取诊断信息' : 'Diagnostics unavailable',
+        ),
+      )
+      .finally(() => setDiagnosticsBusy(false))
+  }
+
+  const toggleDiagnostics = () => {
+    const next = !diagnosticsOpen
+    setDiagnosticsOpen(next)
+    if (next) refreshDiagnostics()
+  }
+
   const cancelLangFlyClose = () => {
     if (langCloseTimer.current !== null) {
       window.clearTimeout(langCloseTimer.current)
@@ -748,7 +1056,7 @@ function AccountEntry() {
             </>
           )}
           <div className="account-menu-divider" />
-          <ThemeSwitch />
+          <ThemeSwitch language={lang} />
           <div className="account-menu-divider" />
           <div
             className="lang-row-wrap"
@@ -823,6 +1131,230 @@ function AccountEntry() {
               </div>
             )}
           </div>
+          {enhancedView && (
+            <>
+              <div
+                className="account-menu-item enhanced-mode-row"
+                role="group"
+                aria-label={enhancedView.label}
+              >
+                <span aria-hidden="true">✦</span>
+                <span className="enhanced-mode-copy">
+                  <span>{enhancedView.label}</span>
+                  <span className={enhancedError ? 'error' : ''}>
+                    {enhancedError
+                      ? lang === 'zh' || lang === 'zh-TW'
+                        ? '操作失败，请重试'
+                        : 'Could not complete the request'
+                      : enhancedBusy
+                        ? lang === 'zh' || lang === 'zh-TW'
+                          ? '处理中…'
+                          : 'Working…'
+                        : enhancedView.detail}
+                  </span>
+                </span>
+              </div>
+              <div
+                className="enhanced-mode-picker"
+                role="radiogroup"
+                aria-label={enhancedView.label}
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={enhancedView.selectedMode === 'standard'}
+                  className={enhancedView.selectedMode === 'standard' ? 'selected' : ''}
+                  disabled={enhancedBusy || enhancedView.selectedMode === 'standard'}
+                  onClick={() => runEnhancedAction(false, 'standard')}
+                >
+                  {enhancedView.standardLabel}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={enhancedView.selectedMode === 'enhanced'}
+                  className={enhancedView.selectedMode === 'enhanced' ? 'selected' : ''}
+                  disabled={
+                    enhancedBusy ||
+                    (enhancedView.selectedMode === 'enhanced' &&
+                      enhancedView.action !== 'install') ||
+                    enhancedView.action === 'none'
+                  }
+                  onClick={() => runEnhancedAction(false, 'enhanced')}
+                >
+                  {enhancedView.enhancedLabel}
+                </button>
+              </div>
+              {enhancedView.secondaryAction === 'remove' && (
+                <button
+                  className="account-menu-item enhanced-mode-remove"
+                  role="menuitem"
+                  disabled={enhancedBusy}
+                  onClick={() => runEnhancedAction(true)}
+                >
+                  {enhancedView.secondaryActionLabel}
+                </button>
+              )}
+              {enhancedBusy && (
+                <button
+                  className="account-menu-item enhanced-mode-remove"
+                  role="menuitem"
+                  onClick={() => void window.aiOfficeEnhancedMode?.cancel().then(setEnhancedStatus)}
+                >
+                  {lang === 'zh' || lang === 'zh-TW' ? '取消下载' : 'Cancel download'}
+                </button>
+              )}
+              <button
+                className="account-menu-item diagnostic-center-toggle"
+                role="menuitem"
+                aria-expanded={diagnosticsOpen}
+                onClick={toggleDiagnostics}
+              >
+                <span aria-hidden="true">ⓘ</span>
+                <span>{lang === 'zh' || lang === 'zh-TW' ? '诊断与反馈' : 'Diagnostics'}</span>
+                <span className="diagnostic-center-chevron">{diagnosticsOpen ? '−' : '+'}</span>
+              </button>
+              {diagnosticsOpen && (
+                <section
+                  className="diagnostic-center"
+                  aria-label={
+                    lang === 'zh' || lang === 'zh-TW' ? '增强模式诊断' : 'Enhanced diagnostics'
+                  }
+                >
+                  <div className="diagnostic-center-actions">
+                    <button
+                      disabled={diagnosticsBusy}
+                      onClick={() => {
+                        setDiagnosticsBusy(true)
+                        setDiagnosticsNotice('')
+                        void window.aiOfficeEnhancedMode
+                          ?.selfCheck()
+                          .then((result) => {
+                            setSelfCheck(result)
+                            refreshDiagnostics()
+                          })
+                          .catch(() =>
+                            setDiagnosticsNotice(
+                              lang === 'zh' || lang === 'zh-TW'
+                                ? '自检未能完成'
+                                : 'Self-check could not finish',
+                            ),
+                          )
+                          .finally(() => setDiagnosticsBusy(false))
+                      }}
+                    >
+                      {diagnosticsBusy
+                        ? '…'
+                        : lang === 'zh' || lang === 'zh-TW'
+                          ? '运行自检'
+                          : 'Run self-check'}
+                    </button>
+                    <button
+                      onClick={() =>
+                        void window.aiOfficeEnhancedMode
+                          ?.exportDiagnostics()
+                          .then((result) =>
+                            setDiagnosticsNotice(
+                              result === 'saved'
+                                ? lang === 'zh' || lang === 'zh-TW'
+                                  ? '诊断报告已导出'
+                                  : 'Report exported'
+                                : '',
+                            ),
+                          )
+                      }
+                    >
+                      {lang === 'zh' || lang === 'zh-TW' ? '导出报告' : 'Export report'}
+                    </button>
+                  </div>
+                  {selfCheck && (
+                    <>
+                      <p
+                        className={
+                          selfCheck.status === 'passed' ? 'diagnostic-ok' : 'diagnostic-error'
+                        }
+                      >
+                        {selfCheck.status === 'passed'
+                          ? lang === 'zh' || lang === 'zh-TW'
+                            ? '基础连接正常'
+                            : 'Core connectivity is healthy'
+                          : lang === 'zh' || lang === 'zh-TW'
+                            ? '部分检查未通过'
+                            : 'Some checks failed'}
+                      </p>
+                      <ul className="diagnostic-check-list">
+                        {selfCheck.checks.map((check) => (
+                          <li key={check.layer}>
+                            <span>{check.layer}</span>
+                            <span className={`diagnostic-status ${check.status}`}>
+                              {check.status === 'passed'
+                                ? '✓'
+                                : check.status === 'not_tested'
+                                  ? '–'
+                                  : '×'}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  <div className="diagnostic-task-list">
+                    {(diagnostics?.recent ?? []).slice(0, 3).map((task) => (
+                      <button
+                        key={task.diagnosticId}
+                        className="diagnostic-task"
+                        title={
+                          lang === 'zh' || lang === 'zh-TW' ? '复制诊断 ID' : 'Copy diagnostic ID'
+                        }
+                        onClick={() =>
+                          void window.aiOfficeEnhancedMode
+                            ?.copyDiagnosticId(task.diagnosticId)
+                            .then(() =>
+                              setDiagnosticsNotice(
+                                lang === 'zh' || lang === 'zh-TW'
+                                  ? '诊断 ID 已复制'
+                                  : 'Diagnostic ID copied',
+                              ),
+                            )
+                        }
+                      >
+                        <span>{task.host}</span>
+                        <code>{task.diagnosticId.slice(-8)}</code>
+                        <span className={`diagnostic-status ${task.status}`}>{task.status}</span>
+                      </button>
+                    ))}
+                    {diagnostics && diagnostics.recent.length === 0 && (
+                      <p>
+                        {lang === 'zh' || lang === 'zh-TW' ? '暂无最近任务' : 'No recent tasks'}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    className="diagnostic-detail-toggle"
+                    disabled={!diagnostics || diagnostics.detailedUntil !== null}
+                    onClick={() =>
+                      void window.aiOfficeEnhancedMode?.enableDetailed().then(setDiagnostics)
+                    }
+                  >
+                    {diagnostics?.detailedUntil
+                      ? lang === 'zh' || lang === 'zh-TW'
+                        ? '详细诊断已临时开启'
+                        : 'Detailed diagnostics temporarily enabled'
+                      : lang === 'zh' || lang === 'zh-TW'
+                        ? '开启 30 分钟详细诊断'
+                        : 'Enable detailed diagnostics for 30 minutes'}
+                  </button>
+                  {diagnosticsNotice && <p role="status">{diagnosticsNotice}</p>}
+                  <ImageSearchSettings language={lang} />
+                  <p className="diagnostic-privacy-note">
+                    {lang === 'zh' || lang === 'zh-TW'
+                      ? '报告不包含文档内容、提示词、密钥或本机路径。'
+                      : 'Reports exclude document content, prompts, credentials, and local paths.'}
+                  </p>
+                </section>
+              )}
+            </>
+          )}
           {appVersion && (
             <div className="account-menu-version">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -840,50 +1372,83 @@ function AccountEntry() {
             </div>
           )}
           {loggedIn && (
-            <div className="office-relay-claim">
-              <label htmlFor="office-relay-code">Connect Office with its 6-digit code</label>
-              <div className="office-relay-claim-row">
-                <input
-                  id="office-relay-code"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  value={officeRelayCode}
-                  placeholder="000000"
-                  onChange={(event) => {
-                    setOfficeRelayCode(event.target.value.replace(/\D/g, '').slice(0, 6))
-                    setOfficeRelayError('')
-                  }}
-                />
-                <button
-                  className="btn btn-office-allow"
-                  disabled={officeRelayBusy || !/^\d{6}$/.test(officeRelayCode)}
-                  onClick={() => {
-                    setOfficeRelayBusy(true)
-                    setOfficeRelayError('')
-                    void window.aiOffice
-                      .claimOfficeRelay(officeRelayCode)
-                      .then(() => {
-                        setOfficeRelayStatus('claiming')
-                        setOfficeRelayCode('')
-                      })
-                      .catch((error) =>
-                        setOfficeRelayError(error instanceof Error ? error.message : 'relay_error'),
-                      )
-                      .finally(() => setOfficeRelayBusy(false))
-                  }}
+            <>
+              <button
+                className="account-menu-item office-connection-row"
+                role="menuitem"
+                aria-expanded={officeConnectionOpen}
+                onClick={() => setOfficeConnectionOpen((open) => !open)}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <rect
+                    x="2"
+                    y="2.5"
+                    width="12"
+                    height="9"
+                    rx="1.7"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                  />
+                  <path
+                    d="M5.5 14h5M8 11.5V14"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <span>{officeCopy.label}</span>
+                <span
+                  className={`office-connection-status${officeCopy.connected ? ' connected' : ''}`}
                 >
-                  Connect
-                </button>
-              </div>
-              <div role="status">
-                Office relay:{' '}
-                {officeRelayStatus === 'disconnected:protocol_version_mismatch'
-                  ? 'This PowerPoint add-in requires a newer WisWork PC. Update WisWork PC, then pair again.'
-                  : officeRelayStatus}
-              </div>
-              {officeRelayError && <div role="alert">Could not claim code: {officeRelayError}</div>}
-            </div>
+                  {officeCopy.connected ? officeCopy.detail : '›'}
+                </span>
+              </button>
+              {officeConnectionOpen && !officeCopy.connected && (
+                <div className="office-connection-panel">
+                  <p>{officeCopy.detail}</p>
+                  <div className="office-relay-claim-row">
+                    <input
+                      id="office-relay-code"
+                      aria-label={officeCopy.detail}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      value={officeRelayCode}
+                      placeholder="000000"
+                      onChange={(event) => {
+                        setOfficeRelayCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                        setOfficeRelayError('')
+                      }}
+                    />
+                    <button
+                      className="office-connect-button"
+                      disabled={officeRelayBusy || !/^\d{6}$/.test(officeRelayCode)}
+                      onClick={() => {
+                        setOfficeRelayBusy(true)
+                        setOfficeRelayError('')
+                        void window.aiOffice
+                          .claimOfficeRelay(officeRelayCode)
+                          .then(() => {
+                            setOfficeRelayStatus('claiming')
+                            setOfficeRelayCode('')
+                          })
+                          .catch(() => setOfficeRelayError('relay_error'))
+                          .finally(() => setOfficeRelayBusy(false))
+                      }}
+                    >
+                      {officeRelayBusy ? '…' : officeCopy.action}
+                    </button>
+                  </div>
+                  {officeRelayError && (
+                    <p className="office-connection-error" role="alert">
+                      {lang === 'zh' || lang === 'zh-TW'
+                        ? '连接失败，请检查代码后重试'
+                        : 'Could not connect. Check the code and try again.'}
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
           )}
           {loggedIn && (
             <button

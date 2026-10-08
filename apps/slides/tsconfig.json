@@ -7,12 +7,15 @@
     // Pin resolution to this repo's workspace sources (avoids stale types when node_modules links point elsewhere)
     "baseUrl": ".",
     "paths": {
+      "@wiswork/agent-core": ["../../packages/agent-core/src/index.ts"],
       "@wiswork/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
+      "@wiswork/presentation-ops": ["../../packages/presentation-ops/src/index.ts"],
       "@wiswork/pptx-engine/table-grid": ["../../packages/pptx-engine/src/table-grid.ts"],
       "@wiswork/pptx-engine/background-promote": [
         "../../packages/pptx-engine/src/background-promote.ts"
       ],
-      "@wiswork/pptx-render": ["../../packages/pptx-render/src/index.ts"]
+      "@wiswork/pptx-render": ["../../packages/pptx-render/src/index.ts"],
+      "@wiswork/pptx-render/coords": ["../../packages/pptx-render/src/coords.ts"]
     }
   },
   "include": ["src", "tests", "electron.vite.config.ts", "vitest.config.ts"]

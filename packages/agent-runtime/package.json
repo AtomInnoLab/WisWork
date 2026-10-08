@@ -1,0 +1,23 @@
+{
+  "name": "@wiswork/agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wiswork/agent-core": "*",
+    "@wiswork/agent-harness": "*",
+    "@wiswork/presentation-verification": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

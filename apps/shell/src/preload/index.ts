@@ -5,7 +5,6 @@ import type {
   AccountStatus,
   OfficePairingRequest,
   OfficeBridgeStatus,
-  OfficeRelayStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -17,9 +16,15 @@ import type {
   UiLanguage,
   AppTheme,
 } from '../shared/home-api'
+import { sanitizeOfficeRelayStatus } from './office-relay-status'
 import { HOME_CHANNELS, OFFICE_PAIRING_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
+import {
+  ENHANCED_MODE_CHANNELS,
+  type EnhancedModeApi,
+  type EnhancedModeStatus,
+} from '../shared/enhanced-mode-api'
 
 const UI_LANGUAGES: readonly UiLanguage[] = [
   'zh',
@@ -167,6 +172,20 @@ const homeApi: HomeApi = {
     if (channel !== 'stable' && channel !== 'beta') throw new Error('Invalid update channel.')
     await ipcRenderer.invoke(HOME_CHANNELS.setUpdateChannel, channel)
   },
+  async saveImageSearchKey(key) {
+    if (typeof key !== 'string' || !key.trim() || key.length > 4096)
+      throw new Error('Invalid image search key.')
+    return ipcRenderer.invoke(HOME_CHANNELS.saveImageSearchKey, key)
+  },
+  async clearImageSearchKey() {
+    return ipcRenderer.invoke(HOME_CHANNELS.clearImageSearchKey)
+  },
+  async imageSearchKeyStatus() {
+    return ipcRenderer.invoke(HOME_CHANNELS.imageSearchKeyStatus)
+  },
+  async testImageSearchKey() {
+    return ipcRenderer.invoke(HOME_CHANNELS.testImageSearchKey)
+  },
   async accountStatus() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.accountStatus)
     return (result ?? { loggedIn: false }) as AccountStatus
@@ -251,28 +270,7 @@ const homeApi: HomeApi = {
   },
   async officeRelayStatus() {
     const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayStatus)
-    const safe = new Set<OfficeRelayStatus>([
-      'disconnected',
-      'connecting',
-      'claiming',
-      'awaiting_approval',
-      'paired',
-      'disconnected:auth_required',
-      'disconnected:logout',
-      'disconnected:network_error',
-      'disconnected:new_claim',
-      'disconnected:pairing_expired',
-      'disconnected:protocol_violation',
-      'disconnected:rejected',
-      'disconnected:relay_error',
-      'disconnected:relay_closed',
-      'disconnected:session_expired',
-      'disconnected:shutdown',
-      'error:invalid_config',
-    ])
-    return typeof result === 'string' && safe.has(result as OfficeRelayStatus)
-      ? (result as OfficeRelayStatus)
-      : 'disconnected'
+    return sanitizeOfficeRelayStatus(result)
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)
@@ -355,3 +353,28 @@ const tabsApi: TabsApi = {
 }
 
 contextBridge.exposeInMainWorld('aiOfficeTabs', tabsApi)
+
+const enhancedModeApi: EnhancedModeApi = {
+  status: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.status) as Promise<EnhancedModeStatus>,
+  install: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.install) as Promise<EnhancedModeStatus>,
+  remove: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.remove) as Promise<EnhancedModeStatus>,
+  update: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.update) as Promise<EnhancedModeStatus>,
+  cancel: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.cancel) as Promise<EnhancedModeStatus>,
+  setMode(mode) {
+    if (mode !== 'standard' && mode !== 'enhanced')
+      return Promise.reject(new Error('Invalid mode.'))
+    return ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.setMode, mode) as Promise<EnhancedModeStatus>
+  },
+  diagnostics: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.diagnostics),
+  selfCheck: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.selfCheck),
+  enableDetailed: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.enableDetailed),
+  copyDiagnosticId(diagnosticId) {
+    if (!/^diag_[A-Za-z0-9_-]{24}$/.test(diagnosticId)) {
+      return Promise.reject(new Error('Invalid diagnostic ID.'))
+    }
+    return ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.copyDiagnosticId, diagnosticId)
+  },
+  exportDiagnostics: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.exportDiagnostics),
+}
+
+contextBridge.exposeInMainWorld('aiOfficeEnhancedMode', enhancedModeApi)

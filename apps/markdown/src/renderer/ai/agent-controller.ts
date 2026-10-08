@@ -1,5 +1,9 @@
 import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
-import type { AgentLoopOptions } from '@wiswork/agent-core'
+import type {
+  AgentLoopOptions,
+  ToolExecutionOutcome,
+  ToolExecutionSuspension,
+} from '@wiswork/agent-core'
 import { useEffect, useRef } from 'react'
 
 interface LifecycleAgentController<TSnapshot> extends AgentHarness<TSnapshot> {
@@ -29,10 +33,18 @@ export const createAgentController = <TSnapshot>(
     subscribe: (listener) => inner?.subscribe(listener) ?? (() => undefined),
     subscribeAcp: (listener) => inner?.subscribeAcp(listener) ?? (() => undefined),
     run: (instruction, images) => inner?.run(instruction, images) ?? false,
-    resume: (messages) => inner?.resume(messages) ?? false,
+    resume: (instruction, images) => inner?.resume(instruction, images) ?? false,
     stop: () => inner?.stop(),
     reset: () => inner?.reset(),
     restore: (messages) => inner?.restore(messages),
+    appendAssistantContext: (text) => inner?.appendAssistantContext(text) ?? false,
+    suspendToolExecution(result) {
+      if (!inner?.suspendToolExecution) throw new Error('agent_suspension_unavailable')
+      return inner.suspendToolExecution(result)
+    },
+    ownsToolExecutionSuspension(value: ToolExecutionOutcome): value is ToolExecutionSuspension {
+      return inner?.ownsToolExecutionSuspension?.(value) === true
+    },
     activate() {
       if (!terminal && !inner) inner = createAgentHarness(options)
     },

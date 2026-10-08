@@ -214,7 +214,7 @@ async function fixture(pageCount = 2, extraShapeCount = 32) {
             shapes.findIndex((s) => s.id === op.shape_id),
             1,
           )
-        else
+        else if (op.op === 'set_shape_geometry')
           Object.assign(
             shapes.find((s) => s.id === op.shape_id)!,
             { left: op.left, top: op.top, width: op.width, height: op.height },

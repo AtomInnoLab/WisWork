@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   extractVerifiedTectonic,
+  diagnosticForFailure,
   fetchVerifiedAsset,
   parseArguments,
   publishExecutable,
@@ -15,6 +16,11 @@ import {
 const asset = {
   id: 'tectonic-test-darwin-arm64',
   archive: { format: 'tar.gz', executable: 'tectonic' },
+}
+
+const windowsAsset = {
+  id: 'tectonic-test-win32-x64',
+  archive: { format: 'zip', executable: 'tectonic.exe' },
 }
 
 test('CLI accepts an explicit output path for the verified executable', () => {
@@ -56,6 +62,58 @@ test('extractVerifiedTectonic validates one executable and its exact version', a
     execFileImplementation: execute,
   })
   assert.equal(await readFile(executable, 'utf8'), 'binary')
+})
+
+test('extractVerifiedTectonic validates one Windows ZIP executable', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-win-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const archive = join(root, 'tectonic.zip')
+  await writeFile(archive, 'fixture')
+  const execute = async (file, args) => {
+    if (file === 'tar' && args[0] === '-tf') return { stdout: 'tectonic.exe\n', stderr: '' }
+    if (file === 'tar' && args[0] === '-xf') {
+      await writeFile(join(args[3], 'tectonic.exe'), 'windows-binary')
+      return { stdout: '', stderr: '' }
+    }
+    if (file.endsWith('tectonic.exe') && args[0] === '--version') {
+      return { stdout: 'tectonic 0.16.9\n', stderr: '' }
+    }
+    throw new Error('unexpected command')
+  }
+  const executable = await extractVerifiedTectonic(windowsAsset, archive, root, '0.16.9', {
+    execFileImplementation: execute,
+  })
+  assert.equal(await readFile(executable, 'utf8'), 'windows-binary')
+})
+
+test('extractVerifiedTectonic skips directory fsync for Windows ZIP extraction', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-win-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+  context.after(() => Object.defineProperty(process, 'platform', platformDescriptor))
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' })
+  const archive = join(root, 'tectonic.zip')
+  await writeFile(archive, 'fixture')
+  const execute = async (file, args) => {
+    if (file === 'tar' && args[0] === '-tf') return { stdout: 'tectonic.exe\n', stderr: '' }
+    if (file === 'tar' && args[0] === '-xf') {
+      await writeFile(join(args[3], 'tectonic.exe'), 'windows-binary')
+      return { stdout: '', stderr: '' }
+    }
+    if (file.endsWith('tectonic.exe') && args[0] === '--version') {
+      return { stdout: 'tectonic 0.16.9\n', stderr: '' }
+    }
+    throw new Error('unexpected command')
+  }
+
+  const executable = await extractVerifiedTectonic(windowsAsset, archive, root, '0.16.9', {
+    execFileImplementation: execute,
+    openImplementation: async () => {
+      throw new Error('Windows cannot fsync directories')
+    },
+  })
+
+  assert.equal(await readFile(executable, 'utf8'), 'windows-binary')
 })
 
 test('extractVerifiedTectonic replaces a poisoned version-spoofing cache', async (context) => {
@@ -119,6 +177,47 @@ test('selectPlatformAsset rejects path traversal IDs', () => {
   )
 })
 
+test('selectPlatformAsset accepts only the prescribed Windows ZIP archive', () => {
+  const manifest = {
+    schemaVersion: 1,
+    tectonic: {
+      version: '0.16.9',
+      assets: [
+        {
+          ...windowsAsset,
+          platform: 'win32-x64',
+          url: 'https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.16.9/fixed.zip',
+          bytes: 1,
+          sha256: 'a'.repeat(64),
+        },
+      ],
+    },
+  }
+
+  assert.equal(selectPlatformAsset(manifest, 'win32-x64').archive.format, 'zip')
+
+  for (const archive of [
+    { format: 'tar', executable: 'tectonic.exe' },
+    { format: 'zip64', executable: 'tectonic.exe' },
+    { format: 'zip', executable: 'tectonic' },
+  ]) {
+    assert.throws(
+      () =>
+        selectPlatformAsset(
+          {
+            ...manifest,
+            tectonic: {
+              ...manifest.tectonic,
+              assets: [{ ...manifest.tectonic.assets[0], archive }],
+            },
+          },
+          'win32-x64',
+        ),
+      /archive is invalid/i,
+    )
+  }
+})
+
 test('fetchVerifiedAsset stops oversized responses', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-'))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -164,6 +263,58 @@ test('fetchVerifiedAsset retries a transient download and still verifies integri
   assert.deepEqual(retries, [2])
   assert.equal(await readFile(target, 'utf8'), body)
   assert.equal(result.bytes, Buffer.byteLength(body))
+})
+
+test('fetchVerifiedAsset uses five bounded attempts with exponential backoff by default', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-default-retry-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const target = join(root, 'asset.tar.gz')
+  const body = 'verified-after-transient-outage'
+  const retries = []
+  const delays = []
+  let attempts = 0
+
+  await fetchVerifiedAsset(
+    {
+      url: 'https://github.com/example/fixed',
+      bytes: Buffer.byteLength(body),
+      sha256: createHash('sha256').update(body).digest('hex'),
+    },
+    target,
+    {
+      retryDelayMs: 1_000,
+      sleepImplementation: async (delay) => delays.push(delay),
+      onRetry: (attempt, systemCode) => retries.push({ attempt, systemCode }),
+      fetchImplementation: async () => {
+        attempts += 1
+        if (attempts < 5) {
+          const systemError = Object.assign(new Error('connect timeout'), {
+            code: 'UND_ERR_CONNECT_TIMEOUT',
+          })
+          throw new TypeError('fetch failed', { cause: systemError })
+        }
+        return new Response(body)
+      },
+    },
+  )
+
+  assert.equal(attempts, 5)
+  assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000])
+  assert.deepEqual(
+    retries,
+    [2, 3, 4, 5].map((attempt) => ({ attempt, systemCode: 'UND_ERR_CONNECT_TIMEOUT' })),
+  )
+})
+
+test('diagnosticForFailure reports a safe nested Node fetch system code', () => {
+  const systemError = Object.assign(new Error('socket closed'), { code: 'ECONNRESET' })
+  const fetchError = new TypeError('fetch failed', { cause: systemError })
+
+  assert.deepEqual(diagnosticForFailure(fetchError), {
+    code: 'TECTONIC_FETCH_FAILED',
+    stage: 'prepare',
+    systemCode: 'ECONNRESET',
+  })
 })
 
 test('extractVerifiedTectonic restores the prior sidecar when publish fails', async (context) => {

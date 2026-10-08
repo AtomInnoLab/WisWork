@@ -124,7 +124,9 @@ describe('stable host-ID text access', () => {
       shapes: [{ id: 'shape-id' }],
       shapesTruncated: false,
     })
-    expect(shapes.load).toHaveBeenCalledWith(expect.objectContaining({ $top: 1001 }))
+    expect(shapes.load).toHaveBeenCalledWith(
+      'items/id,items/name,items/type,items/left,items/top,items/width,items/height',
+    )
     expect(await adapter.readPresentationPageText('host-27', 'shape-id')).toEqual({
       slideId: 'host-27',
       shapeId: 'shape-id',

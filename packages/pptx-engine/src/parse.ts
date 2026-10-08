@@ -42,6 +42,8 @@ import type {
   TableCellBorders,
   ChartElement,
 } from './types'
+import { locatePresentationBackground } from './presentation-xml'
+import { readCreationId } from './durable-targets'
 import { parseChartXml } from './chart'
 import { parseCustGeom } from './custgeom'
 import {
@@ -136,7 +138,11 @@ export function parseSlide(input: SlideParseInput): Slide {
       ...(sp.gapAfter ? { gapAfter: sp.gapAfter } : {}),
     }
     const el = parseShapeFragment(sp, fragXml, anchor, ctx)
-    if (el) elements.push(el)
+    if (el) {
+      const creationId = readCreationId(fragXml)
+      if (creationId) el.creationId = creationId
+      elements.push(el)
+    }
   })
 
   // Background: the slide's own <p:bg> wins, otherwise inherit layout→master (read-only).
@@ -147,6 +153,7 @@ export function parseSlide(input: SlideParseInput): Slide {
 
   return {
     path,
+    durableId: path,
     originalXml: slideXml,
     bodyPrefix: scan.bodyPrefix,
     bodySuffix: scan.bodySuffix,
@@ -159,12 +166,24 @@ export function parseSlide(input: SlideParseInput): Slide {
 
 /** Extract the <p:bg> background fill from slide/layout/master XML (read-only). */
 function parseBackground(xml: string, ctx: ParseContext): Fill | undefined {
-  // Extract only the <p:bg>…</p:bg> fragment and parse it alone, avoiding a whole-slide parse
-  const m = /<p:bg\b[\s\S]*?<\/p:bg>/.exec(xml)
-  if (!m) return undefined
+  // Extract only the namespace-resolved cSld-direct background, avoiding fake tags in comments/CDATA.
+  let location: ReturnType<typeof locatePresentationBackground>
+  try {
+    location = locatePresentationBackground(xml)
+  } catch {
+    return undefined
+  }
+  if (!location.backgroundRange) return undefined
+  const [backgroundStart, backgroundEnd] = location.backgroundRange
+  const presentationPrefix = location.presentationPrefix
+  const presentationTag = presentationPrefix ? `${presentationPrefix}:` : ''
+  const escapedPrefix = presentationTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const normalized = xml
+    .slice(backgroundStart, backgroundEnd)
+    .replace(new RegExp(`(<\\/?)${escapedPrefix}(?=bg(?:Pr|Ref)?\\b)`, 'g'), '$1p:')
   let doc: any
   try {
-    doc = parser.parse(m[0])
+    doc = parser.parse(normalized)
   } catch {
     return undefined
   }
@@ -579,6 +598,10 @@ function parseGroupChild(
       break
     default:
       return null
+  }
+  if (el && rawXml) {
+    const creationId = readCreationId(rawXml)
+    if (creationId) el.creationId = creationId
   }
   const nvId = groupChildNvId(child)
   if (el && nvId != null) el.nvId = nvId

@@ -122,6 +122,7 @@ it('connects browser auth, an Office-shaped dialog, team transport and actual PC
         authenticatedFetch: vi.fn(),
         sendDiagnostic: vi.fn(),
         diagnosticSessionId: () => undefined,
+        forget: vi.fn(async () => undefined),
       } as OfficeRelaySession
     },
   })

@@ -22,6 +22,7 @@ import { AiPanel, WisWorkMark, type AiPreset, type MarkdownAiDeps } from './ai/A
 import { DOCX_MAX_IMAGE_PX, exportDocxBytes } from './export/docxExport'
 import { buildPrintHtml } from './export/printHtml'
 import { resolveImageSrc } from './editor/localImage'
+import { createSaveCoordinator } from './save-coordinator'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
@@ -87,7 +88,8 @@ export default function App() {
 
   const statusRef = useRef<LoadStatus>('loading')
   const dirtyRef = useRef(false)
-  const savingRef = useRef(false)
+  const saveCoordinatorRef = useRef<ReturnType<typeof createSaveCoordinator> | null>(null)
+  if (!saveCoordinatorRef.current) saveCoordinatorRef.current = createSaveCoordinator()
   const envelopeRef = useRef<DocEnvelope>(EMPTY_ENVELOPE)
   const editorRef = useRef<Editor | null>(null)
   const filePathRef = useRef<string | null>(null)
@@ -193,47 +195,54 @@ export default function App() {
   )
 
   /** Serialize and write to disk; false when canceled/failed (caller keeps the tab open) */
-  const doSave = useCallback(async (mode: SaveMode, suggestedName?: string): Promise<boolean> => {
-    const current = editorRef.current
-    if (!current || statusRef.current !== 'ready' || savingRef.current) return false
-    savingRef.current = true
-    setSaveState('saving')
-    try {
-      // edits landing while the write is in flight (AI streaming, fast typing)
-      // must keep the document dirty — compare doc identity after the await
-      const docAtSave = current.state.doc
-      const fmAtSave = envelopeRef.current.frontmatter
-      const body = current.getMarkdown()
-      const text = serializeDocText(envelopeRef.current, body)
-      const result = await window.markdownApi.save({ text, mode, suggestedName })
-      if (result.ok && 'path' in result) {
-        setFilePath(result.path)
-        const unchanged =
-          editorRef.current?.state.doc === docAtSave && envelopeRef.current.frontmatter === fmAtSave
-        if (unchanged) {
-          dirtyRef.current = false
-          setDirty(false)
-          window.markdownApi.setDirty(false)
-          setSaveState('saved')
-        } else {
-          // the main process cleared its dirty flag on write — re-assert it
-          dirtyRef.current = true
-          setDirty(true)
-          window.markdownApi.setDirty(true)
-          setSaveState('idle')
+  const performSave = useCallback(
+    async (mode: SaveMode, suggestedName?: string): Promise<boolean> => {
+      const current = editorRef.current
+      if (!current || statusRef.current !== 'ready') return false
+      setSaveState('saving')
+      try {
+        // edits landing while the write is in flight (AI streaming, fast typing)
+        // must keep the document dirty — compare doc identity after the await
+        const docAtSave = current.state.doc
+        const fmAtSave = envelopeRef.current.frontmatter
+        const body = current.getMarkdown()
+        const text = serializeDocText(envelopeRef.current, body)
+        const result = await window.markdownApi.save({ text, mode, suggestedName })
+        if (result.ok && 'path' in result) {
+          setFilePath(result.path)
+          const unchanged =
+            editorRef.current?.state.doc === docAtSave &&
+            envelopeRef.current.frontmatter === fmAtSave
+          if (unchanged) {
+            dirtyRef.current = false
+            setDirty(false)
+            window.markdownApi.setDirty(false)
+            setSaveState('saved')
+          } else {
+            // the main process cleared its dirty flag on write — re-assert it
+            dirtyRef.current = true
+            setDirty(true)
+            window.markdownApi.setDirty(true)
+            setSaveState('idle')
+          }
+          return true
         }
-        return true
+        setSaveState(result.ok ? 'idle' : 'failed')
+        return false
+      } catch (err) {
+        console.error('[markdown] save failed:', err)
+        setSaveState('failed')
+        return false
       }
-      setSaveState(result.ok ? 'idle' : 'failed')
-      return false
-    } catch (err) {
-      console.error('[markdown] save failed:', err)
-      setSaveState('failed')
-      return false
-    } finally {
-      savingRef.current = false
-    }
-  }, [])
+    },
+    [],
+  )
+
+  const doSave = useCallback(
+    (mode: SaveMode, suggestedName?: string): Promise<boolean> =>
+      saveCoordinatorRef.current!.enqueue(() => performSave(mode, suggestedName)),
+    [performSave],
+  )
 
   const runExport = useCallback(async (format: ExportFormat) => {
     const current = editorRef.current
@@ -283,7 +292,12 @@ export default function App() {
       (mode) => void doSave(mode).then((ok) => window.markdownApi.sendSaveRequestAck(ok)),
     )
     const offClose = window.markdownApi.onCloseSaveRequest(() => {
-      void doSave('save').then((ok) => window.markdownApi.sendCloseSaveResult(ok))
+      void saveCoordinatorRef
+        .current!.flushDirty(
+          () => dirtyRef.current,
+          () => performSave('save'),
+        )
+        .then((ok) => window.markdownApi.sendCloseSaveResult(ok))
     })
     const offRenamed = window.markdownApi.onFileRenamed((newPath) => setFilePath(newPath))
     const onKeyDown = (event: KeyboardEvent) => {
@@ -299,7 +313,7 @@ export default function App() {
       offRenamed()
       window.removeEventListener('keydown', onKeyDown, true)
     }
-  }, [doSave])
+  }, [doSave, performSave])
 
   useEffect(() => {
     localStorage.setItem('mdapp.autoSave', autoSave ? '1' : '0')

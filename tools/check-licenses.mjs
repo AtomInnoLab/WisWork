@@ -121,6 +121,41 @@ if (
   violations.push('tectonic: vendored MIT license text is incomplete')
 }
 
+const codexManifest = JSON.parse(readFileSync(join(ROOT, 'tools/codex/manifest.json'), 'utf8'))
+const codexComponent = codexManifest?.component
+const codexHashes = new Set(codexComponent?.assets?.map((asset) => asset.sha256))
+for (const expected of [
+  '552ec417bd679532a531175e705979b9908e575b54ca267f461620b77441a2ad',
+  '3124de77fcb1f2eed35e959453ebd49cc4e786cf9236414948f02d58026728f8',
+  'c8908d687cf7caa3074921479726db32f96a295372c3544f1e96919a7254951f',
+])
+  if (!codexHashes.has(expected))
+    violations.push(`enhanced-mode component: missing reviewed digest ${expected}`)
+if (
+  codexComponent?.version !== '0.147.0' ||
+  codexComponent?.license?.spdx !== 'Apache-2.0' ||
+  !isAllowed(codexComponent?.license?.spdx) ||
+  codexComponent?.license?.sourceUrl !==
+    'https://github.com/openai/codex/blob/rust-v0.147.0/LICENSE'
+) {
+  violations.push('enhanced-mode component: invalid pinned license metadata')
+}
+for (const [path, expectedHash] of [
+  ['tools/codex/NOTICE', 'fbe315c31ec234c6eeff5bdd0d06393849ef1f9a1a172a9fa2d1129b8c58b8b7'],
+  ['tools/codex/LICENSE-V8', 'b09b68442c92b871a7e4aad1a712302acec44599b961d2e4b2f413836bfd19f7'],
+  [
+    'tools/codex/LICENSE-RUSTY-V8',
+    'e0658d4bc74dc1cf48ae9b442e1493ec530d6fbc4db69efbb5dbfb288e04bdd8',
+  ],
+])
+  if (
+    createHash('sha256')
+      .update(readFileSync(join(ROOT, path), 'utf8'))
+      .digest('hex') !== expectedHash
+  ) {
+    violations.push(`enhanced-mode component: unreviewed legal text ${path}`)
+  }
+
 if (violations.length > 0) {
   console.error('Disallowed or unknown licenses in production dependencies:\n')
   for (const v of violations) console.error(`  ${v}`)

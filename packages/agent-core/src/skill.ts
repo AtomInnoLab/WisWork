@@ -1,4 +1,67 @@
 import type { AgentToolCall, AgentToolDef, ToolExecutionOutcome } from './types'
+import type {
+  PresentationAcceptanceContract,
+  PresentationCompletionReceipt,
+} from '@wiswork/presentation-verification'
+
+export type PresentationTaskPreparation =
+  | { kind: 'bypass' }
+  | { kind: 'clarify'; question: string }
+  | {
+      kind: 'ready'
+      contract: PresentationAcceptanceContract
+      plan?: string[]
+      requiresConfirmation?: boolean
+    }
+
+export type PresentationTaskCompletion =
+  | { kind: 'receipt'; receipt: PresentationCompletionReceipt }
+  | { kind: 'correct'; instruction: string }
+
+export interface PresentationTaskHooks {
+  /** Host compiles a separate exact contract per tool batch; reconcile before advancing. */
+  batchScoped?: boolean
+  /** Invalidates current host UI lifecycle while allowing receipt reconciliation to finish. */
+  abandon?(): void
+  /** Host-owned intent compiler. Model output is never accepted as a contract. */
+  prepare(
+    instruction: string,
+    signal?: AbortSignal,
+  ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
+  /**
+   * Host-owned pre-dispatch enrollment. It receives the bounded tool calls selected for
+   * this batch and must freeze exact authoritative targets before any call executes.
+   */
+  enroll?(
+    calls: readonly AgentToolCall[],
+    currentContract: PresentationAcceptanceContract | undefined,
+    signal?: AbortSignal,
+  ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
+  /** Required when prepare marks an existing host confirmation boundary. */
+  confirm?(
+    contract: PresentationAcceptanceContract,
+    signal?: AbortSignal,
+  ): boolean | Promise<boolean>
+  /** Reconcile authoritative host state and either close with a receipt or request one correction. */
+  complete(context: {
+    contract: PresentationAcceptanceContract
+    mutated: boolean
+    cancelled: boolean
+    correctionPasses: number
+    signal?: AbortSignal
+  }): PresentationTaskCompletion | Promise<PresentationTaskCompletion>
+}
+
+/**
+ * Deliberately small set of run facts available to a terminal-response policy.
+ * The hook never receives tool results, snapshots, or the full conversation.
+ */
+export interface FinalResponseReviewContext {
+  /** text from the normal tool-free terminal turn */
+  readonly text: string
+  /** whether any tool reported a successful mutation during this run */
+  readonly mutated: boolean
+}
 
 /**
  * A skill packages one capability domain for the agent loop: its system
@@ -15,6 +78,15 @@ export interface AgentSkill {
    * skeleton + selection). Return '' when there is nothing to attach.
    */
   buildContext?(): string
+  /** Optional host-owned orchestration for presentation mutation runs. */
+  presentation?: PresentationTaskHooks
+  /** Allow a bounded retry when the same state-based completion correction remains true. */
+  repeatFinalResponseCorrection?: boolean
+  /**
+   * Optionally reject one normal tool-free terminal response by returning a
+   * static corrective user message. Exceptions fail open in AgentLoop.
+   */
+  reviewFinalResponse?(context: FinalResponseReviewContext): string | undefined
   /**
    * signal: aborted when the user hits stop. Long-running tools (e.g.
    * generate_deck with internal LLM calls) should check signal.aborted in
@@ -38,6 +110,11 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
       owner.set(tool.name, skill)
     }
   }
+  const reviewers = skills.flatMap((skill) =>
+    skill.reviewFinalResponse ? [skill.reviewFinalResponse.bind(skill)] : [],
+  )
+  const presentations = skills.flatMap((skill) => (skill.presentation ? [skill.presentation] : []))
+  if (presentations.length > 1) throw new Error('multiple presentation orchestrators')
   return {
     id,
     systemPrompt: [intro, ...skills.map((s) => s.systemPrompt)].filter(Boolean).join('\n\n'),
@@ -47,6 +124,21 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
         .map((s) => s.buildContext?.() ?? '')
         .filter(Boolean)
         .join('\n\n'),
+    ...(presentations[0] ? { presentation: presentations[0] } : {}),
+    ...(skills.some((skill) => skill.repeatFinalResponseCorrection)
+      ? { repeatFinalResponseCorrection: true }
+      : {}),
+    ...(reviewers.length
+      ? {
+          reviewFinalResponse: (context: FinalResponseReviewContext) => {
+            for (const review of reviewers) {
+              const correction = review(context)
+              if (correction) return correction
+            }
+            return undefined
+          },
+        }
+      : {}),
     executeTool: (call, signal) => {
       const skill = owner.get(call.name)
       if (!skill) {

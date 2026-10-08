@@ -15,7 +15,7 @@ const lines = readFileSync(join(root, 'SHA256SUMS'), 'utf8').trim().split('\n')
 if (lines.length !== 9) throw new Error('expected nine frozen files')
 const hashes = new Map()
 for (const line of lines) {
-  const match = /^([a-f0-9]{64})  ([A-Za-z0-9./-]+)$/.exec(line)
+  const match = /^([a-f0-9]{64}) {2}([A-Za-z0-9./-]+)$/.exec(line)
   if (!match || match[2].includes('..') || hashes.has(match[2]))
     throw new Error('invalid checksum entry')
   const actual = createHash('sha256')

@@ -188,6 +188,60 @@ describe('Office safe diagnostics', () => {
       createOfficeDiagnostics({ host: 'powerpoint', build: 'x', remoteSamplePercent: 101 }),
     ).toThrow('invalid_office_diagnostic_sample_percent')
   })
+  it.each([720_123, 1_800_000, 86_400_001])(
+    'retains long-run elapsed time within the existing Relay bound: %i',
+    (durationMs) => {
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      diagnostics.record({ phase: 'transport', errorCode: 'network_error', durationMs })
+      expect(diagnostics.snapshot().events.at(-1)?.duration_ms).toBe(
+        Math.min(86_400_000, durationMs),
+      )
+    },
+  )
+
+  it.each([
+    'https://private.example/document',
+    '//private.example/document',
+    'file:/private/document',
+    '192.0.2.42',
+  ])('does not export URL or path values disguised as Office identifiers: %s', (value) => {
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+    diagnostics.record({
+      phase: 'tool',
+      errorCode: 'office_read_failed',
+      error: { code: value, name: value, debugInfo: { errorLocation: value } },
+    })
+    const event = diagnostics.snapshot().events.at(-1)
+    expect(event).not.toHaveProperty('office_error_code')
+    expect(event).not.toHaveProperty('office_error_name')
+    expect(event).not.toHaveProperty('office_error_location')
+    expect(diagnostics.exportJson()).not.toContain('private')
+  })
+
+  it.each([
+    'image_fetch_unavailable',
+    'image_limit',
+    'image_mime_unsupported',
+    'invalid_image',
+    'office_screenshot_unavailable',
+  ])(
+    'preserves %s instead of misdiagnosing image preparation as an Office write failure',
+    (errorCode) => {
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      diagnostics.setTool('insert_web_image')
+      diagnostics.record({
+        phase: 'tool',
+        errorCode,
+        error: new Error('private image URL or upstream error body'),
+      })
+      expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
+        tool: 'insert_web_image',
+        error_code: errorCode,
+      })
+      expect(diagnostics.exportJson()).not.toContain('private image')
+    },
+  )
+
   it('normalizes Office platform and exposes only the active known requirement set', () => {
     const isSetSupported = vi.fn(
       (name: string, version: string) => name === 'WordApi' && version === '1.3',

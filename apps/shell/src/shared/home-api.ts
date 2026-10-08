@@ -24,6 +24,17 @@ export type UiLanguage =
 
 export type AppTheme = 'light' | 'dark'
 
+export interface ImageSearchConfigStatus {
+  configured: boolean
+  source: 'environment' | 'stored' | 'none'
+}
+
+export interface ImageSearchConfigTestResult {
+  ok: boolean
+  resultCount?: number
+  error?: string
+}
+
 /** a recent file entry shown on the home screen; type derives from the extension */
 export interface RecentEntry {
   path: string
@@ -107,6 +118,11 @@ export interface HomeApi {
   getUpdateChannel(): Promise<UpdateChannel>
   /** switch + persist the update channel; triggers an immediate update check */
   setUpdateChannel(channel: UpdateChannel): Promise<void>
+  /** Persist a SerpApi key in Electron safeStorage. The key is never returned. */
+  saveImageSearchKey(key: string): Promise<ImageSearchConfigStatus>
+  clearImageSearchKey(): Promise<ImageSearchConfigStatus>
+  imageSearchKeyStatus(): Promise<ImageSearchConfigStatus>
+  testImageSearchKey(): Promise<ImageSearchConfigTestResult>
   /** Current application theme, persisted by the shell. */
   getTheme(): Promise<AppTheme>
   /** Apply and persist the application theme. */
@@ -174,20 +190,33 @@ export type OfficeRelayStatus =
   | 'connecting'
   | 'claiming'
   | 'awaiting_approval'
+  | 'waiting_for_office'
   | 'paired'
   | 'disconnected:auth_required'
   | 'disconnected:logout'
   | 'disconnected:network_error'
   | 'disconnected:new_claim'
+  | 'disconnected:new_resume'
+  | 'disconnected:new_revocation'
   | 'disconnected:pairing_expired'
   | 'disconnected:protocol_violation'
   | 'disconnected:protocol_version_mismatch'
   | 'disconnected:rejected'
   | 'disconnected:relay_error'
+  | 'disconnected:invalid_code'
   | 'disconnected:relay_closed'
   | 'disconnected:session_expired'
+  | 'disconnected:binding_unavailable'
+  | 'disconnected:binding_revoked'
+  | 'disconnected:binding_not_remembered'
+  | 'disconnected:capability_not_negotiated'
+  | 'disconnected:peer_unavailable'
+  | 'disconnected:resume_limit'
+  | 'disconnected:resume_rate_limited'
+  | 'disconnected:account_switch'
   | 'disconnected:shutdown'
   | 'error:invalid_config'
+  | 'error:binding_lifecycle'
 
 export interface RenameResult {
   ok: boolean
@@ -263,6 +292,10 @@ export const HOME_CHANNELS = {
   themeChanged: 'home:theme-changed',
   getUpdateChannel: 'home:get-update-channel',
   setUpdateChannel: 'home:set-update-channel',
+  saveImageSearchKey: 'home:save-image-search-key',
+  clearImageSearchKey: 'home:clear-image-search-key',
+  imageSearchKeyStatus: 'home:image-search-key-status',
+  testImageSearchKey: 'home:test-image-search-key',
   accountStatus: 'home:account-status',
   accountLogin: 'home:account-login',
   accountLoginEvent: 'home:account-login-event',

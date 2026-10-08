@@ -292,3 +292,22 @@ it('requires exact native text-box versus geometric-shape roles and rejects unde
     ).status,
   ).toBe('conflict')
 })
+
+it('requires the exact requested italic state for a durably added text box', async () => {
+  const f = await fixture()
+  const operations = structuredClone(f.operations)
+  const text = operations[0]!
+  if (text.op !== 'add_text_box') throw Error('unexpected fixture')
+  text.italic = true
+  const node = f.added[0]!.replace(
+    /<a:rPr\b([^>]*)>/g,
+    (_all, attrs) => `<a:rPr${attrs.replace(/\si="[^"]*"/g, '')} i="1">`,
+  )
+  const current = f.baseline.replace('</p:spTree>', node + '</p:spTree>')
+  expect(
+    await observePowerPointNativeAdd(f.before, await f.pack(current), operations),
+  ).toMatchObject({ status: 'prefix_partial', completedCount: 1 })
+  expect(
+    await observePowerPointNativeAdd(f.before, await f.pack(f.prefix(1)), operations),
+  ).toMatchObject({ status: 'conflict' })
+})

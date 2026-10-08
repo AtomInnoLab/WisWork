@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { AgentLoop } from '@wiswork/agent-core'
 import {
   AiComposer,
   AiTypingIndicator,
@@ -12,6 +11,8 @@ import { loadProposalForReview } from './proposal-review.js'
 import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
+import { createLatexRuntimeLoop, type LatexRuntimeLoop } from './runtime-loop.js'
+import { useLatexLocale } from '../i18n/locale.js'
 import {
   normalizeAgentContext,
   serializeAgentPrompt,
@@ -213,6 +214,7 @@ export function AiPanel({
   sensitiveContextBlocked?: boolean
   onRemoveContext?: (key: AgentContextKey) => void
 }) {
+  useLatexLocale()
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -224,9 +226,9 @@ export function AiPanel({
   const [resizing, setResizing] = useState(false)
   const sessionRef = useRef<AgentPanelSession | null>(null)
   if (!sessionRef.current) sessionRef.current = new AgentPanelSession(projectId)
-  const loopRef = useRef<AgentLoop | null>(null)
+  const loopRef = useRef<LatexRuntimeLoop | null>(null)
   const loopBindingRef = useRef<{
-    loop: AgentLoop
+    loop: LatexRuntimeLoop
     getRun: () => AgentRunScope | null
     setRun: (scope: AgentRunScope | null) => void
   } | null>(null)
@@ -264,84 +266,87 @@ export function AiPanel({
     workflow.setProject(projectId)
     setStatus(null)
     setTimeline([])
-    const loop = new AgentLoop({
-      transport: createLatexTransport(),
-      skill: createLatexSkill(window.latexApi, () => projectId),
-      events: {
-        onText: (value) => {
-          if (loopRef.current !== loop) return
-          const scope = loopRun
-          if (scope && session.acceptsRun(loop, scope)) setText(value)
-        },
-        onToolStart: (call) => {
-          if (loopRef.current !== loop) return
-          const scope = loopRun
-          if (!scope || !session.acceptsRun(loop, scope)) return
-          const runId = `${scope.generation}.${scope.run}`
-          setTimeline((current) => startTimelineEntry(current, call, runId))
-        },
-        onToolExecuted: ({ call, execution }) => {
-          if (loopRef.current !== loop) return
-          const scope = loopRun
-          if (!scope || !session.acceptsRun(loop, scope)) return
-          const timelineId = session.timelineId(scope, call.id)
-          const runId = `${scope.generation}.${scope.run}`
-          setTimeline((current) => {
-            const started = current.some((entry) => entry.id === timelineId)
-              ? current
-              : startTimelineEntry(current, call, runId)
-            return completeTimelineEntry(started, timelineId, execution)
-          })
-          if (call.name !== 'propose_project_edits' || execution.isError) return
-          void loadProposalForReview(execution.output, projectId, (request) =>
-            window.latexApi.getProposal(request),
-          )
-            .then((value) => {
-              if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
-                void workflow.setProposal(value)
+    const loop = createLatexRuntimeLoop(
+      {
+        transport: createLatexTransport(),
+        skill: createLatexSkill(window.latexApi, () => projectId),
+        events: {
+          onText: (value) => {
+            if (loopRef.current !== loop) return
+            const scope = loopRun
+            if (scope && session.acceptsRun(loop, scope)) setText(value)
+          },
+          onToolStart: (call) => {
+            if (loopRef.current !== loop) return
+            const scope = loopRun
+            if (!scope || !session.acceptsRun(loop, scope)) return
+            const runId = `${scope.generation}.${scope.run}`
+            setTimeline((current) => startTimelineEntry(current, call, runId))
+          },
+          onToolExecuted: ({ call, execution }) => {
+            if (loopRef.current !== loop) return
+            const scope = loopRun
+            if (!scope || !session.acceptsRun(loop, scope)) return
+            const timelineId = session.timelineId(scope, call.id)
+            const runId = `${scope.generation}.${scope.run}`
+            setTimeline((current) => {
+              const started = current.some((entry) => entry.id === timelineId)
+                ? current
+                : startTimelineEntry(current, call, runId)
+              return completeTimelineEntry(started, timelineId, execution)
             })
-            .catch((error: unknown) => {
-              if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
-                setStatus(error instanceof Error ? error.message : String(error))
-            })
-        },
-        onDone: (result) => {
-          if (loopRef.current !== loop) return
-          const scope = loopRun
-          if (!scope || !session.acceptsCompletion(loop, scope)) return
-          const acceptResult = session.acceptsRun(loop, scope)
-          if (result.cancelled) setTimeline(cancelRunningTimelineEntries)
-          setBusy(false)
-          setText('')
-          if (acceptResult && result.text)
-            setChat((current) => [...current, { role: 'assistant', text: result.text }])
-          const ids = chatIdsRef.current
-          if (acceptResult && ids && session.acceptsProject(ids))
-            void window.latexApi.appendDirectoryChat({
-              projectId,
-              storeProjectId: ids.storeProjectId,
-              chatId: ids.chatId,
-              role: 'assistant',
-              text: result.text,
-            })
-          session.finishRun(loop, scope)
-          loopRun = null
-        },
-        onError: (error) => {
-          if (loopRef.current !== loop) return
-          const scope = loopRun
-          if (!scope || !session.acceptsCompletion(loop, scope)) return
-          if (session.acceptsRun(loop, scope)) {
-            setTimeline((current) => failRunningTimelineEntries(current, error))
-            setStatus(error)
-          }
-          setBusy(false)
-          setText('')
-          session.finishRun(loop, scope)
-          loopRun = null
+            if (call.name !== 'propose_project_edits' || execution.isError) return
+            void loadProposalForReview(execution.output, projectId, (request) =>
+              window.latexApi.getProposal(request),
+            )
+              .then((value) => {
+                if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
+                  void workflow.setProposal(value)
+              })
+              .catch((error: unknown) => {
+                if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
+                  setStatus(error instanceof Error ? error.message : String(error))
+              })
+          },
+          onDone: (result) => {
+            if (loopRef.current !== loop) return
+            const scope = loopRun
+            if (!scope || !session.acceptsCompletion(loop, scope)) return
+            const acceptResult = session.acceptsRun(loop, scope)
+            if (result.cancelled) setTimeline(cancelRunningTimelineEntries)
+            setBusy(false)
+            setText('')
+            if (acceptResult && result.text)
+              setChat((current) => [...current, { role: 'assistant', text: result.text }])
+            const ids = chatIdsRef.current
+            if (acceptResult && ids && session.acceptsProject(ids))
+              void window.latexApi.appendDirectoryChat({
+                projectId,
+                storeProjectId: ids.storeProjectId,
+                chatId: ids.chatId,
+                role: 'assistant',
+                text: result.text,
+              })
+            session.finishRun(loop, scope)
+            loopRun = null
+          },
+          onError: (error) => {
+            if (loopRef.current !== loop) return
+            const scope = loopRun
+            if (!scope || !session.acceptsCompletion(loop, scope)) return
+            if (session.acceptsRun(loop, scope)) {
+              setTimeline((current) => failRunningTimelineEntries(current, error))
+              setStatus(error)
+            }
+            setBusy(false)
+            setText('')
+            session.finishRun(loop, scope)
+            loopRun = null
+          },
         },
       },
-    })
+      window.codexRuntime,
+    )
     const projectScope = session.attachLoop(loop, projectId)
     loopRef.current = loop
     loopBindingRef.current = {
@@ -402,7 +407,7 @@ export function AiPanel({
     return () => {
       workflow.cancel()
       session.detachLoop(loop)
-      loop.cancel()
+      loop.dispose()
       if (loopRef.current === loop) loopRef.current = null
       if (loopBindingRef.current?.loop === loop) loopBindingRef.current = null
       loopRun = null

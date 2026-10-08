@@ -1,17 +1,18 @@
 /**
- * Post-generation layout QC: each cloud-generated page gets one focused vision pass —
- * screenshot + element inventory → a restricted agent fixes objective layout defects
- * with execute_slide_script. Runs in its own AgentLoop per page (fresh context, so the
- * QC cost doesn't ride on the main conversation), orchestrated by AiPanel.
+ * Read-only post-transaction quality review. A fresh AgentLoop receives one bounded
+ * screenshot plus geometry-only context and cannot invoke mutation tools.
  */
 import {
   AgentLoop,
   type AgentImage,
   type AgentSkill,
+  type AgentStreamRequest,
   type AgentTransport,
 } from '@wiswork/agent-core'
-import { auditSlideLayout } from './layout-audit'
-import { createSlidesSkill, formatSlideDump, type DeckAccess } from './slides-skill'
+import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
+import { auditSlideQuality, createDeterministicQualityReceipt } from './layout-audit'
+import type { DeckAccess } from './slides-skill'
+import { geometryPxToPoints } from './presentation-geometry-transactions'
 
 /** Kill switch: localStorage 'ai-slides-qc' = '0' disables the automatic pass */
 export function isQcEnabled(): boolean {
@@ -20,6 +21,271 @@ export function isQcEnabled(): boolean {
 
 /** Cost ceiling per generation run — beyond this the tail pages are skipped (reported to the user) */
 export const QC_MAX_PAGES = 20
+export const DETERMINISTIC_QC_MAX_PAGES = 50
+
+export const VISUAL_QC_LIMITS = Object.freeze({
+  maxScreenshots: QC_MAX_PAGES,
+  maxTransportRequestBytes: 2 * 1024 * 1024,
+  /** Leaves 50 KB for the bounded prompt, system message, and provider JSON envelope. */
+  maxScreenshotRequestBytes: 1_950_000,
+  maxSummaryElements: 100,
+  maxPromptChars: 12_000,
+})
+
+export interface QcGeometryFix {
+  sourceId: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface QcReview {
+  status: 'pass' | 'needs_fix' | 'cannot_verify'
+  summary: string
+  fixes: QcGeometryFix[]
+}
+
+export type VisualQcContextOutcome = {
+  page: number
+  status: 'passed' | 'needs_fix' | 'unavailable'
+  corrected: boolean
+}
+
+/** A bounded follow-up, using fresh screenshots instead of trusting reviewer prose as instructions. */
+export function buildVisualQcRepairInstruction(
+  outcomes: readonly VisualQcContextOutcome[],
+  attempts: number,
+  cancelled: boolean,
+): string | undefined {
+  if (cancelled || attempts >= 2) return undefined
+  const pages = [...new Set(outcomes.filter((o) => o.status === 'needs_fix').map((o) => o.page))]
+    .filter((page) => Number.isSafeInteger(page) && page > 0)
+    .slice(0, QC_MAX_PAGES)
+  if (!pages.length) return undefined
+  return `Continue the requested presentation work: automatic screenshot review found unresolved visual defects on ${pages.map((page) => `slideIndex: ${page - 1}`).join(', ')}. Read and screenshot only these pages to identify the defects. Repair them using the normal proposal and confirmation tools, preserving content and other pages. Wait for applied results, then screenshot the changed pages again. Do not merely report the findings or claim completion before verification. If a change cannot be applied safely, report the specific unresolved blocker.`
+}
+
+/** Model-visible post-run metadata only; never includes screenshot pixels or slide content. */
+export function buildVisualQcContext(outcomes: readonly VisualQcContextOutcome[]): string {
+  const pages = (status: VisualQcContextOutcome['status']) =>
+    outcomes
+      .filter((outcome) => outcome.status === status)
+      .map((outcome) => outcome.page)
+      .join(', ')
+  const corrected = outcomes
+    .filter((outcome) => outcome.corrected)
+    .map((outcome) => outcome.page)
+    .join(', ')
+  return [
+    'Automatic visual QC rendered and reviewed screenshots.',
+    pages('passed') ? `Passed slides: ${pages('passed')}.` : '',
+    corrected ? `Automatically corrected and rechecked slides: ${corrected}.` : '',
+    pages('needs_fix') ? `Slides still needing attention: ${pages('needs_fix')}.` : '',
+    pages('unavailable') ? `Unavailable slides: ${pages('unavailable')}.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+const QC_MAX_FIXES = 8
+
+export function parseQcReview(
+  text: string,
+  slide: ReturnType<DeckAccess['getSlides']>[number],
+): QcReview {
+  if (text.trim().toUpperCase() === 'OK') return { status: 'pass', summary: 'OK', fixes: [] }
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) throw new Error('quality_review_invalid')
+  const value = JSON.parse(text.slice(start, end + 1)) as unknown
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('quality_review_invalid')
+  const record = value as Record<string, unknown>
+  if (
+    Object.keys(record).some((key) => !['status', 'summary', 'fixes'].includes(key)) ||
+    !['pass', 'needs_fix', 'cannot_verify'].includes(String(record.status)) ||
+    typeof record.summary !== 'string' ||
+    record.summary.length > 240 ||
+    !Array.isArray(record.fixes) ||
+    record.fixes.length > QC_MAX_FIXES
+  )
+    throw new Error('quality_review_invalid')
+  const allowed = new Set(
+    slide.nodes.filter((node) => !node.decoration).map((node) => node.sourceId),
+  )
+  const fixes = record.fixes.map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+      throw new Error('quality_review_invalid')
+    const fix = raw as Record<string, unknown>
+    if (
+      Object.keys(fix).some((key) => !['sourceId', 'x', 'y', 'width', 'height'].includes(key)) ||
+      typeof fix.sourceId !== 'string' ||
+      !allowed.has(fix.sourceId)
+    )
+      throw new Error('quality_review_invalid')
+    const numbers = [fix.x, fix.y, fix.width, fix.height]
+    if (numbers.some((item) => typeof item !== 'number' || !Number.isFinite(item)))
+      throw new Error('quality_review_invalid')
+    const [x, y, width, height] = numbers as number[]
+    if (
+      x < 0 ||
+      y < 0 ||
+      width < 8 ||
+      height < 8 ||
+      x + width > slide.widthPx ||
+      y + height > slide.heightPx
+    )
+      throw new Error('quality_review_invalid')
+    return { sourceId: fix.sourceId, x, y, width, height }
+  })
+  if ((record.status === 'pass' || record.status === 'cannot_verify') && fixes.length)
+    throw new Error('quality_review_invalid')
+  if (record.status === 'needs_fix' && fixes.length === 0) throw new Error('quality_review_invalid')
+  return {
+    status: record.status as QcReview['status'],
+    summary: record.summary.trim().replace(/\s+/g, ' '),
+    fixes,
+  }
+}
+
+export async function applyQcGeometryFixes(
+  access: DeckAccess,
+  pageIndex: number,
+  fixes: readonly QcGeometryFix[],
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!access.executePresentationOperation || fixes.length === 0 || fixes.length > QC_MAX_FIXES)
+    return false
+  const slide = access.getSlides()[pageIndex]
+  if (!slide) return false
+  const scale = slide.scale || access.fitWidthPx / slide.widthPx
+  if (!Number.isFinite(scale) || scale <= 0) return false
+  const allowed = new Set(
+    slide.nodes.filter((node) => !node.decoration).map((node) => node.sourceId),
+  )
+  if (
+    fixes.some(
+      (fix) =>
+        !allowed.has(fix.sourceId) ||
+        ![fix.x, fix.y, fix.width, fix.height].every(Number.isFinite) ||
+        fix.x < 0 ||
+        fix.y < 0 ||
+        fix.width < 8 ||
+        fix.height < 8 ||
+        fix.x + fix.width > slide.widthPx ||
+        fix.y + fix.height > slide.heightPx,
+    )
+  )
+    return false
+  const execution = await access.executePresentationOperation(
+    {
+      transactionId: `slides-qc-fix-${crypto.randomUUID().replaceAll('-', '')}`,
+      slideIndex: pageIndex,
+      operations: fixes.map((fix) => ({
+        kind: 'set_geometry' as const,
+        sourceId: fix.sourceId,
+        geometry: {
+          x: geometryPxToPoints(fix.x, scale),
+          y: geometryPxToPoints(fix.y, scale),
+          width: geometryPxToPoints(fix.width, scale),
+          height: geometryPxToPoints(fix.height, scale),
+        },
+      })),
+    },
+    signal,
+  )
+  return execution.receipt.status === 'applied' || execution.receipt.status === 'unchanged'
+}
+
+export function visualQcRequestBytes(request: AgentStreamRequest): number {
+  return new TextEncoder().encode(JSON.stringify(request)).byteLength
+}
+
+export function createBoundedVisualQcTransport(delegate: AgentTransport): AgentTransport {
+  return {
+    stream(request, callbacks) {
+      let bytes = Infinity
+      try {
+        bytes = visualQcRequestBytes(request)
+      } catch {
+        // A non-serializable request is unavailable at the same boundary.
+      }
+      if (bytes > VISUAL_QC_LIMITS.maxTransportRequestBytes) {
+        queueMicrotask(() => callbacks.onError('quality_request_too_large'))
+        return { cancel: () => {} }
+      }
+      return delegate.stream(request, callbacks)
+    },
+  }
+}
+
+export function visualQcImageRequestBytes(image: AgentImage): number {
+  return new TextEncoder().encode(JSON.stringify({ images: [image] })).byteLength
+}
+
+export function shouldRunVisualQc(opts: {
+  receiptStatus: string
+  requested: boolean
+  transactionId: string
+  sessionId: string
+  completedKeys: ReadonlySet<string>
+}): boolean {
+  return (
+    opts.requested &&
+    opts.receiptStatus === 'applied' &&
+    !opts.completedKeys.has(`${opts.sessionId}:${opts.transactionId}`)
+  )
+}
+
+export async function publishAppliedDeterministicQuality(opts: {
+  transactionId: string
+  receiptStatus: string
+  sessionId: string
+  pageIndexes: readonly number[]
+  completedKeys: Set<string>
+  access: DeckAccess
+  prepareSlide: (pageIndex: number) => Promise<{
+    status: string
+    slideId?: string
+    elementIds?: Readonly<Record<string, string>>
+  }>
+  publish: (receipt: PresentationQualityReceipt) => void
+  signal?: AbortSignal
+  isCurrent: () => boolean
+}): Promise<number[]> {
+  if (opts.receiptStatus !== 'applied') return []
+  const key = `${opts.sessionId}:${opts.transactionId}`
+  if (opts.completedKeys.has(key)) return []
+  opts.completedKeys.add(key)
+  while (opts.completedKeys.size > 100) {
+    const oldest = opts.completedKeys.values().next().value
+    if (oldest === undefined) break
+    opts.completedKeys.delete(oldest)
+  }
+  const published: number[] = []
+  for (const pageIndex of [...new Set(opts.pageIndexes)].slice(0, DETERMINISTIC_QC_MAX_PAGES)) {
+    opts.signal?.throwIfAborted()
+    if (!opts.isCurrent()) return published
+    const prepared = await opts.prepareSlide(pageIndex)
+    opts.signal?.throwIfAborted()
+    if (!opts.isCurrent()) return published
+    const slide = opts.access.getSlides()[pageIndex]
+    if (prepared.status !== 'prepared' || !prepared.slideId || !slide) continue
+    opts.publish(
+      createDeterministicQualityReceipt(slide, {
+        qualityRunId: `qc-det-${pageIndex}-${opts.transactionId.slice(0, 100)}`,
+        transactionId: opts.transactionId,
+        slideId: prepared.slideId,
+        ...(prepared.elementIds
+          ? { elementCreationId: (sourceId) => prepared.elementIds?.[sourceId] }
+          : {}),
+      }),
+    )
+    published.push(pageIndex)
+  }
+  return published
+}
 
 /**
  * Pages produced by a HTML conversion call, as 0-based indexes.
@@ -70,22 +336,22 @@ export function mergeQcPages(
 }
 
 /** Only the two tools the QC pass needs: fresh geometry reads + atomic layout scripts */
-const QC_TOOL_ALLOWLIST = new Set(['read_slide', 'execute_slide_script'])
+export const QC_SYSTEM_PROMPT = `You are a read-only slide quality reviewer. Each request gives you ONE bounded screenshot and a geometry-only element summary.
 
-const QC_SYSTEM_PROMPT = `You are a slide layout QA fixer. Each request gives you ONE slide: a rendered screenshot (attached image) and an element inventory (ids, geometry, colors, text — the same ids the tools accept).
-
-Look at the screenshot for OBJECTIVE layout defects only:
+Look at the screenshot for material layout and design defects:
 - text overflowing its box, colliding with a neighbor, or clipped by the canvas edge
 - elements overlapping unintentionally (a text block over another text block; content under an image)
 - unreadable contrast (text color too close to what it sits on)
 - obviously ragged alignment or wildly uneven spacing among sibling items (cards, bullets, columns)
 - distorted or badly cropped images
+- weak information hierarchy where the conclusion is not the clearest element
+- competing focal elements instead of one focal visual
+- excessive density, decorative card repetition, or insufficient whitespace
+- design-system consistency problems in typography, color, image treatment, and spacing
 
-Fix defects with execute_slide_script (batch every change for this page into as few calls as possible; call read_slide first if you need fresher geometry than the inventory). Prefer the minimal change: move/resize/shrink font — keep the page's design.
+Do not invoke tools, quote slide text, change wording, add/delete elements, or move anything across slides.
 
-STRICTLY FORBIDDEN: redesigning the page, changing the color scheme or fonts for taste, rewriting copy, adding or deleting elements, touching elements that look fine. When the screenshot shows no objective defect, make NO tool call.
-
-Final reply: one short line (under 15 words) stating what you fixed, or exactly "OK" if nothing needed fixing.`
+Return ONLY strict JSON: {"status":"pass|needs_fix|cannot_verify","summary":"under 15 words","fixes":[{"sourceId":"existing id","x":0,"y":0,"width":100,"height":100}]}. Use fixes only for objective geometry defects, at most 8, inside the canvas. For clean slides use status pass and an empty fixes array. For defects that geometry alone cannot safely fix use cannot_verify and an empty fixes array.`
 
 export interface QcPageResult {
   /** page still exists and the pass ran */
@@ -97,7 +363,53 @@ export interface QcPageResult {
   /** deterministic audit issue counts before/after (rollback signal: after > before) */
   preIssues: number
   postIssues: number
+  fixes?: QcGeometryFix[]
   error?: string
+}
+
+export function toVisualQualityReceipt(
+  qualityRunId: string,
+  transactionId: string,
+  slideId: string,
+  result: QcPageResult,
+): PresentationQualityReceipt {
+  if (result.error) {
+    if (result.error === 'cancelled' || result.error === 'stale_session') {
+      return {
+        qualityRunId,
+        transactionId,
+        slideId,
+        source: 'visual',
+        status: 'cancelled',
+        code: result.error,
+      }
+    }
+    return {
+      qualityRunId,
+      transactionId,
+      slideId,
+      source: 'visual',
+      status: 'unavailable',
+      code:
+        result.error === 'screenshot_unavailable'
+          ? 'screenshot_unavailable'
+          : result.error === 'visual_capacity_exceeded'
+            ? 'visual_capacity_exceeded'
+            : 'transport_unavailable',
+    }
+  }
+  return {
+    qualityRunId,
+    transactionId,
+    slideId,
+    source: 'visual',
+    status: 'available',
+    findings:
+      result.reply && result.reply.toUpperCase() !== 'OK'
+        ? [{ code: 'visual_quality', severity: 'warning', slideId, evidence: {} }]
+        : [],
+    truncated: false,
+  }
 }
 
 export interface QcPageOptions {
@@ -106,8 +418,12 @@ export interface QcPageOptions {
   pageIndex: number
   /** pixelRatio-1 PNG of the page's current rendering; null runs a geometry-only pass */
   screenshot: AgentImage | null
+  /** Bounded DESIGN.md excerpt plus this page's visual and acceptance contract. */
+  designContext?: string
   systemSuffix?: () => string
   signal?: AbortSignal
+  /** Session/deck identity guard checked again when the asynchronous review settles. */
+  isCurrent?: () => boolean
 }
 
 export async function captureCurrentQcShot<T>(opts: {
@@ -120,57 +436,59 @@ export async function captureCurrentQcShot<T>(opts: {
   return opts.isCurrent() ? { value: shot } : null
 }
 
-export async function runQcInHistoryBatch<T>(opts: {
-  begin: () => Promise<boolean>
-  end: () => Promise<number | null>
-  run: () => Promise<T>
-  signal: AbortSignal
-  isCurrent: () => boolean
-}): Promise<{ result: T; batchId: number | null } | null> {
-  const opened = await opts.begin()
-  let batchId: number | null = null
-  let result!: T
-  try {
-    opts.signal.throwIfAborted()
-    if (!opts.isCurrent()) return null
-    result = await opts.run()
-  } finally {
-    if (opened) batchId = await opts.end()
-  }
-  return { result, batchId }
-}
-
-/** Wrap createSlidesSkill with the QC system prompt and the two-tool allowlist (executor shared) */
+/** Read-only skill: visual QC cannot enter the mutation executor boundary. */
 export function createSlideFixSkill(access: DeckAccess): AgentSkill {
-  const full = createSlidesSkill(access)
+  void access
   return {
     id: 'slides-qc',
     systemPrompt: QC_SYSTEM_PROMPT,
-    tools: full.tools.filter((tool) => QC_TOOL_ALLOWLIST.has(tool.name)),
-    executeTool: full.executeTool,
+    tools: [],
+    executeTool: () => ({
+      output: 'quality_read_only',
+      summary: 'Quality review is read-only',
+      isError: true,
+      mutated: false,
+    }),
   }
 }
 
-function buildQcInstruction(pageIndex: number, dump: string, issues: string[]): string {
+export function buildQcInstruction(
+  pageIndex: number,
+  slide: ReturnType<DeckAccess['getSlides']>[number],
+  issues: ReturnType<typeof auditSlideQuality>,
+  designContext?: string,
+): string {
   const auditStr = issues.length
-    ? `Deterministic geometry audit already flags:\n${issues.map((s) => `- ${s}`).join('\n')}\n(These are hints — the screenshot is the ground truth; it may show more or reveal a flagged item is fine.)`
+    ? `Deterministic geometry audit codes:\n${JSON.stringify(issues)}\n(These are bounded geometry hints.)`
     : 'The deterministic geometry audit found nothing — trust the screenshot for visual defects it cannot measure (contrast, alignment, crowding).'
-  return `Slide ${pageIndex + 1} (slideIndex ${pageIndex}) was just auto-generated. The attached image is its current rendering.
+  const entries = slide.nodes.slice(0, VISUAL_QC_LIMITS.maxSummaryElements).map((node) => ({
+    id: node.sourceId,
+    type: node.type,
+    x: Math.round(node.box.x),
+    y: Math.round(node.box.y),
+    w: Math.round(node.box.w),
+    h: Math.round(node.box.h),
+  }))
+  return `Slide ${pageIndex + 1} (slideIndex ${pageIndex}) was just applied. The attached image is its current rendering.
 
-Element inventory:
-${dump}
+Geometry-only inventory (${entries.length} elements; capped):
+${JSON.stringify(entries)}
 
 ${auditStr}
 
-Inspect the screenshot and fix objective layout defects now.`
+${designContext ? `Design contract and page acceptance criteria:\n${designContext.slice(0, 4_000)}\n` : ''}
+
+Inspect the screenshot and return the strict quality JSON. Geometry fixes may reference only the listed ids.`.slice(
+    0,
+    VISUAL_QC_LIMITS.maxPromptChars,
+  )
 }
 
 /**
- * One page, one focused QC run. The caller owns history batching (rollback via
- * aiSnapshotRestore) and deciding what to do with the result.
+ * One page, one focused read-only QC run. Quality failure never changes write status.
  */
 export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
-  const { access, transport, pageIndex, screenshot, systemSuffix, signal } = opts
+  const { access, transport, pageIndex, screenshot, systemSuffix, signal, isCurrent } = opts
   signal?.throwIfAborted()
   const slide = access.getSlides()[pageIndex]
   if (!slide) {
@@ -183,37 +501,76 @@ export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
       error: `slideIndex ${pageIndex} out of range`,
     })
   }
-  const preIssues = auditSlideLayout(slide)
-  const instruction = buildQcInstruction(pageIndex, formatSlideDump(slide), preIssues)
+  const preIssues = auditSlideQuality(slide, { slideId: `slide-${pageIndex + 1}` })
+  if (
+    screenshot &&
+    visualQcImageRequestBytes(screenshot) > VISUAL_QC_LIMITS.maxScreenshotRequestBytes
+  ) {
+    return Promise.resolve({
+      ok: false,
+      edited: false,
+      reply: '',
+      preIssues: preIssues.length,
+      postIssues: preIssues.length,
+      error: 'screenshot_unavailable',
+    })
+  }
+  const instruction = buildQcInstruction(pageIndex, slide, preIssues, opts.designContext)
 
   return new Promise((resolve) => {
-    let edited = false
     let settled = false
     const finish = (r: { reply: string; error?: string }) => {
       if (settled) return
       settled = true
       signal?.removeEventListener('abort', onAbort)
+      if (isCurrent && !isCurrent()) {
+        resolve({
+          ok: false,
+          edited: false,
+          reply: '',
+          preIssues: preIssues.length,
+          postIssues: preIssues.length,
+          error: 'stale_session',
+        })
+        return
+      }
       const after = access.getSlides()[pageIndex]
+      let review: QcReview | undefined
+      if (!r.error && after) {
+        try {
+          review = parseQcReview(r.reply, after)
+        } catch {
+          r = { reply: '', error: 'quality_review_invalid' }
+        }
+      }
+      const postFindings = after
+        ? auditSlideQuality(after, { slideId: `slide-${pageIndex + 1}` })
+        : []
+      const blockingFinding = postFindings.find((finding) => finding.severity === 'critical')
       resolve({
         ok: true,
-        edited,
-        reply: r.reply.trim(),
+        edited: false,
+        reply:
+          review?.status === 'pass' && blockingFinding
+            ? blockingFinding.code
+            : review?.status === 'pass'
+              ? 'OK'
+              : (review?.summary ?? r.reply.trim().replace(/\s+/g, ' ').slice(0, 240)),
         preIssues: preIssues.length,
-        postIssues: after ? auditSlideLayout(after).length : 0,
+        postIssues: postFindings.length,
+        ...(review?.fixes.length ? { fixes: review.fixes } : {}),
         ...(r.error !== undefined ? { error: r.error } : {}),
       })
     }
     const loop = new AgentLoop({
-      transport,
+      transport: createBoundedVisualQcTransport(transport),
       skill: createSlideFixSkill(access),
-      // audit feedback inside execute_slide_script output drives at most a couple of fix rounds
-      maxTurns: 6,
+      maxTurns: 1,
       ...(systemSuffix ? { systemSuffix } : {}),
       events: {
-        onToolExecuted: ({ execution }) => {
-          if (execution.mutated) edited = true
-        },
-        onDone: ({ text }) => finish({ reply: text }),
+        onToolExecuted: () => {},
+        onDone: ({ text, cancelled }) =>
+          finish({ reply: text, ...(cancelled ? { error: 'cancelled' } : {}) }),
         onError: (error) => finish({ reply: '', error }),
       },
     })

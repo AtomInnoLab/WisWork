@@ -81,6 +81,72 @@ describe('createAgentHarness', () => {
     expect(transport.callbacks).toHaveLength(0)
     expect(harness.snapshot.busy).toBe(false)
   })
+  it('forwards presentation lifecycle events and receipt localization', async () => {
+    const transport = manualTransport()
+    const onPresentationPlan = vi.fn()
+    const onPresentationReceipt = vi.fn(() => 'Localized receipt')
+    const harness = createAgentHarness({
+      ...options(transport, { onPresentationPlan, onPresentationReceipt }),
+      skill: {
+        ...skill,
+        presentation: {
+          prepare: () => ({
+            kind: 'ready',
+            contract: {
+              version: 1,
+              taskId: 'task-1',
+              documentToken: 'doc-1',
+              sessionToken: 'session-1',
+              baseRevision: `sha256:${'a'.repeat(64)}`,
+              affectedSlides: [2],
+              referenceSlides: [],
+              checks: [
+                {
+                  id: 'check-1',
+                  kind: 'element_property',
+                  slide: 2,
+                  roleOrTarget: { kind: 'role', role: 'title' },
+                  property: 'color',
+                  expected: '#112233',
+                },
+              ],
+              maxCorrectionPasses: 2,
+            },
+            plan: ['Edit'],
+            requiresConfirmation: false,
+          }),
+          complete: () => ({
+            kind: 'receipt',
+            receipt: {
+              version: 1,
+              taskId: 'task-1',
+              status: 'unchanged',
+              mutationReceiptIds: [],
+              passedCheckIds: ['check-1'],
+              failedCheckIds: [],
+              unavailableCheckIds: [],
+              correctionPasses: 0,
+              affectedSlides: [2],
+            },
+          }),
+        },
+      },
+    })
+
+    expect(harness.run('first')).toBe(true)
+    await flush()
+    transport.callbacks[0]!.onDone()
+    await flush()
+    await flush()
+
+    expect(onPresentationPlan).toHaveBeenCalledWith({
+      steps: ['Edit'],
+      requiresConfirmation: false,
+    })
+    expect(onPresentationReceipt).toHaveBeenCalledOnce()
+    expect(harness.messages.at(-1)).toEqual({ role: 'assistant', text: 'Localized receipt' })
+  })
+
   it('publishes running and done state and rejects empty or concurrent runs', async () => {
     const transport = manualTransport()
     const harness = createAgentHarness(options(transport))
@@ -245,6 +311,25 @@ describe('createAgentHarness', () => {
     await flush()
     expect(transport.callbacks).toHaveLength(1)
     expect(harness.messages.filter((message) => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('appends a bounded trusted post-run observation to the preceding assistant turn', async () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    expect(harness.run('build slides')).toBe(true)
+    await flush()
+    transport.callbacks[0]!.onDelta('done')
+    transport.callbacks[0]!.onDone()
+    await flush()
+
+    expect(harness.appendAssistantContext('Visual screenshot review: slides 1-3 passed.')).toBe(
+      true,
+    )
+    expect(harness.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      text: expect.stringContaining('Visual screenshot review: slides 1-3 passed.'),
+    })
+    expect(harness.appendAssistantContext('x'.repeat(2_049))).toBe(false)
   })
 
   it.each(['buildContext', 'formatUserMessage'] as const)(

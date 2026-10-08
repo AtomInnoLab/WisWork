@@ -1,0 +1,400 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  createSlidesSkill,
+  reviewSlidesFinalResponse,
+  type DeckAccess,
+} from '../src/renderer/ai/slides-skill'
+import type { RenderSlide } from '@wiswork/pptx-render'
+
+const CORRECTION =
+  '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
+
+function access(): DeckAccess {
+  return {
+    getSlides: () => [] as RenderSlide[],
+    getCurrent: () => 0,
+    getSelectedIds: () => [],
+    applySlide: () => {},
+    applyDeck: () => {},
+    executePresentationOperation: async (request) => ({
+      receipt: {
+        status: 'applied',
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 'operations' in request ? request.operations.length : 1,
+        createdIds: [],
+      },
+      authoritativeState: 'fresh',
+    }),
+    fitWidthPx: 1280,
+  }
+}
+
+describe('Slides capability truth', () => {
+  it('asks the model to narrate each tool batch with user-visible progress', () => {
+    expect(createSlidesSkill(access()).systemPrompt).toContain(
+      'user-visible progress note before every tool batch',
+    )
+  })
+
+  it.each([
+    '但当前可用的幻灯片编辑接口无法直接修改现有文字的字体颜色，只能改文字内容或位置。',
+    '当前工具不能调整标题栏的位置，所以我暂未修改。',
+    'The available editor does not support changing the font color of existing text.',
+    'I cannot move or resize the title with the available tools.',
+    'The color of existing text cannot be changed with this editor.',
+    'The title cannot be moved with the available tools.',
+  ])('corrects a tool-free false denial: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it('wires the pure policy into the Slides skill', () => {
+    expect(
+      createSlidesSkill(access()).reviewFinalResponse?.({
+        text: 'The tools cannot change an element position.',
+        mutated: false,
+      }),
+    ).toBe(CORRECTION)
+  })
+
+  it('rejects a terminal response while a planned new deck is still missing pages', async () => {
+    const deck = access()
+    deck.getSlides = () => [
+      {
+        widthPx: 1280,
+        heightPx: 720,
+        scale: 1,
+        background: { kind: 'solid', color: '#FFFFFF' },
+        nodes: [],
+      },
+    ]
+    const skill = createSlidesSkill(deck)
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: '新人第一天',
+        style: '简洁蓝色',
+        pages: [
+          {
+            title: '欢迎',
+            brief: '欢迎',
+            layout: 'cover',
+            purpose: '开场',
+            visual: '主标题',
+            acceptance: ['标题突出'],
+            density: 'low',
+          },
+          {
+            title: '安排',
+            brief: '安排',
+            layout: 'timeline',
+            purpose: '解释',
+            visual: '时间线',
+            acceptance: ['顺序清晰'],
+            density: 'medium',
+          },
+          {
+            title: '协作',
+            brief: '协作',
+            layout: 'closing',
+            purpose: '收束',
+            visual: '行动号召',
+            acceptance: ['结论突出'],
+            density: 'low',
+          },
+        ],
+        prototype_pages: [0, 1, 2],
+      },
+    })
+    expect(skill.reviewFinalResponse?.({ text: '已完成。', mutated: true })).toContain('0 of 3')
+  })
+
+  it('rejects a terminal explanation after questionnaire answers until deck planning continues', async () => {
+    const deck = access()
+    deck.askClarification = async () => ({
+      answers: 'Audience: developers\nLength: 9 pages\nStyle: dark technology',
+      cancelled: false,
+    })
+    const skill = createSlidesSkill(deck)
+    await skill.executeTool({
+      id: 'clarify',
+      name: 'ask_clarification',
+      input: {
+        questions: [{ id: 'audience', label: 'Audience?', options: ['Developers', 'Managers'] }],
+      },
+    })
+
+    expect(
+      skill.reviewFinalResponse?.({
+        text: 'Please choose in the questionnaire above, then I will generate the deck.',
+        mutated: true,
+      }),
+    ).toContain('questionnaire answers are already available')
+  })
+
+  it('reuses submitted questionnaire answers when Enhanced transport retries the tool call', async () => {
+    const deck = access()
+    deck.askClarification = vi.fn(async () => ({
+      answers: 'Audience: travellers\nLength: 10 pages',
+      cancelled: false,
+    }))
+    const skill = createSlidesSkill(deck)
+    const call = {
+      id: 'clarify-1',
+      name: 'ask_clarification',
+      input: {
+        questions: [{ id: 'audience', label: 'Audience?', options: ['Travellers', 'Teams'] }],
+      },
+    }
+
+    await skill.executeTool(call)
+    const retry = await skill.executeTool({ ...call, id: 'clarify-2' })
+
+    expect(deck.askClarification).toHaveBeenCalledOnce()
+    expect(retry.output).toContain('already submitted')
+    expect(retry.output).toContain('Audience: travellers')
+  })
+
+  it('coalesces concurrent Enhanced questionnaire retries onto one visible card', async () => {
+    let submit!: (result: { answers: string; cancelled: false }) => void
+    const answer = new Promise<{ answers: string; cancelled: false }>((resolve) => {
+      submit = resolve
+    })
+    const deck = access()
+    deck.askClarification = vi.fn(() => answer)
+    const skill = createSlidesSkill(deck)
+    const input = {
+      questions: [{ id: 'route', label: 'Route?', options: ['Classic', 'Relaxed'] }],
+    }
+
+    const first = skill.executeTool({ id: 'clarify-a', name: 'ask_clarification', input })
+    const retry = skill.executeTool({ id: 'clarify-b', name: 'ask_clarification', input })
+    submit({ answers: 'Route: Classic', cancelled: false })
+
+    await expect(first).resolves.toMatchObject({ mutated: false })
+    await expect(retry).resolves.toMatchObject({ mutated: false })
+    expect(deck.askClarification).toHaveBeenCalledOnce()
+  })
+
+  it('requires the bounded whole-deck builder after planning instead of accumulating blank pages', async () => {
+    const skill = createSlidesSkill(access())
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: 'LLM in one sentence',
+        style: 'minimal',
+        pages: [
+          {
+            title: 'What',
+            brief: 'Definition',
+            layout: 'cover',
+            purpose: 'Open',
+            visual: 'Hero',
+            acceptance: ['Clear'],
+            density: 'low',
+          },
+          {
+            title: 'How',
+            brief: 'Mechanism',
+            layout: 'content',
+            purpose: 'Explain',
+            visual: 'Diagram',
+            acceptance: ['Readable'],
+            density: 'medium',
+          },
+        ],
+        prototype_pages: [0, 1],
+      },
+    })
+    const result = await skill.executeTool({
+      id: 'blank-page',
+      name: 'add_slide',
+      input: { sourceIndex: 0 },
+    })
+    expect(result).toMatchObject({ isError: true, mutated: false })
+    expect(result.output).toContain('ready structured contract with plan_deck')
+  })
+
+  it.each([
+    'Would you like me to change the title color and position?',
+    'Can I change the font color?',
+    'Embedded font packaging is not supported.',
+    'Morph transitions are unavailable in this editor.',
+    '已尝试提交统一调整，但当前 PowerPoint 读取失败，未能应用修改。请重新打开或刷新 PPT 后再试。',
+    'set_element_style failed closed, so I did not claim the edit succeeded.',
+    'set_element_style returned unsupported for this selected object, so I cannot change its font color.',
+    'This title is locked and read-only, so I cannot move it.',
+    'set_element_transform 返回 fail-closed，因此不能移动这个标题。',
+    'I cannot guarantee the exact font color without first inspecting the slide.',
+  ])('does not reject safe or honest terminal text: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it('does not reject a denial after a successful mutation', () => {
+    expect(
+      reviewSlidesFinalResponse({
+        text: 'I cannot move another title because it is locked.',
+        mutated: true,
+      }),
+    ).toBeUndefined()
+  })
+
+  it.each([
+    'I can change font color. I cannot locate the requested chart.',
+    'Font color is supported; however, I cannot find a chart to update.',
+  ])('does not combine unrelated clauses into a false denial: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'Embedded fonts are unavailable. The title position cannot be changed.',
+    'Embedded font packaging is not supported; I cannot move the title.',
+    'image_search failed. The title position cannot be changed.',
+    'image_search failed, so the title cannot be moved.',
+  ])('still catches a supported denial beside an unrelated limitation: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'This target is locked and read-only, so the title cannot be moved.',
+    'The title is a layout decoration and cannot be moved.',
+    'The title is nested in a read-only group, so its position cannot be changed.',
+    'set_element_transform returned target_stale, so the title cannot be moved safely.',
+    'set_element_transform 返回 target_stale，因此不能移动这个标题。',
+    'set_element_transform failed, so the title cannot be moved safely.',
+    'The geometry tool returned an error, so the title cannot be moved safely.',
+    'The format operation failed, so existing text color cannot be changed safely.',
+  ])('allows a target-local fail-closed explanation: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'image_search failed, so the title cannot be moved.',
+    'The chart operation returned an error; the title cannot be moved.',
+    'The chart is locked and read-only, so the title cannot be moved.',
+    'The geometry tool failed, so existing text color cannot be changed.',
+    'The format operation failed, so the title cannot be moved.',
+    'The image is locked and read-only, so the title cannot be moved.',
+    'The title is read-only, so the image cannot be resized.',
+  ])('does not let an unrelated failure justify a supported denial: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'The format tool failed, so existing text color cannot be changed safely.',
+    'The geometry operation returned an error, so the image cannot be resized safely.',
+    'The image is locked and read-only, so the image cannot be resized.',
+    'The title is read-only, so the title cannot be moved.',
+    'PowerPoint read failed, so existing text color cannot be changed safely.',
+    'PPT 读取失败，因此不能移动这个标题。',
+  ])('keeps a same-family or same-target failure honest: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'Title A is locked and read-only, so Title B cannot be moved.',
+    '第一个标题已锁定，所以第二个标题不能移动。',
+    'Element A is read-only, so Element B cannot be resized.',
+    'Image A is locked, so Image B cannot be resized.',
+  ])('does not treat different same-kind objects as the same target: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'Title A is locked and read-only, so Title A cannot be moved.',
+    'Image A is locked, so it cannot be resized.',
+    '第一个标题已锁定，所以第一个标题不能移动。',
+    '第一个标题已锁定，因此该对象不能移动。',
+    'Element id=card-a is read-only, so Element id=card-a cannot be resized.',
+  ])('allows a provably identical or safely referenced target: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'Title A is locked, so that Title B cannot be moved.',
+    'Element id=card-a is read-only, so this Element id=card-b cannot be resized.',
+    'Element card-a is locked, so Element card-b cannot be resized.',
+    'Shape shape_12 is read-only, so Shape shape_13 cannot be resized.',
+  ])('does not let coreference or same kind override conflicting identities: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'Element card-a is locked, so Element card-a cannot be resized.',
+    'Shape shape_12 is read-only, so Shape shape_12 cannot be resized.',
+    'Title A is locked, so that title cannot be moved.',
+    'Element id=card-a is read-only, so this element cannot be resized.',
+  ])('allows matching bare IDs or an identity inherited by a pure reference: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'Element A-card is locked, so Element A-other cannot be resized.',
+    'Shape 1-main is read-only, so Shape 1-alt cannot be resized.',
+    'First Title A is locked, so First Title B cannot be moved.',
+  ])('uses the most specific identity when components overlap: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'Element A-card is locked, so Element A-card cannot be resized.',
+    'Shape 1-main is read-only, so Shape 1-main cannot be resized.',
+    'First Title A is locked, so First Title A cannot be moved.',
+  ])('allows the same most-specific composite identity: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'The editor cannot change, e.g. the title position.',
+    'The editor cannot change, i.e. resize, the title element.',
+    'In v1.2 the editor cannot change the title position.',
+    'At https://example.com/v1.2 the editor cannot change the title position.',
+  ])('keeps common dotted tokens inside the denial clause: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it('checks both ends when more than 64 bounded clauses are present', () => {
+    const text = [
+      ...Array.from({ length: 65 }, (_, index) => `Status sentence ${index + 1}.`),
+      'The title cannot be moved with the available tools.',
+    ].join(' ')
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it('keeps both ends of a long bounded clause', () => {
+    const text = `${'Context '.repeat(70)}The title cannot be moved with the available tools.`
+    expect(text.length).toBeGreaterThan(512)
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'The locked title cannot be moved.',
+    'The title is read-only and cannot be resized.',
+    '锁定的标题不能移动。',
+  ])('allows a constraint bound to the supported target: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it('publishes an executable capability map and multi-page edit contract', () => {
+    const prompt = createSlidesSkill(access()).systemPrompt
+    expect(prompt).toContain('set_element_style')
+    expect(prompt).toContain('setStyle')
+    expect(prompt).toContain('set_element_transform')
+    expect(prompt).toContain('setBox')
+    expect(prompt).toContain('each target page')
+    expect(prompt).toContain('must not finish with inspection or advice only')
+    expect(prompt).toContain('unsupported or fail-closed')
+  })
+
+  it('uses a fixed correction that cannot echo document or response content', () => {
+    const secret = 'CONFIDENTIAL_SLIDE_VALUE_91'
+    const result = reviewSlidesFinalResponse({
+      text: `The tools cannot change text color. ${secret}`,
+      mutated: false,
+    })
+    expect(result).toBe(CORRECTION)
+    expect(result).not.toContain(secret)
+  })
+})

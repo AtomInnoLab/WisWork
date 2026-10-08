@@ -1,8 +1,32 @@
-import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
+import type { AgentSkill, AgentToolCall, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
-import { readBoundedImage } from '../shared/import-media.js'
+import { readBoundedImage, validateBoundedImageBytes } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
+import { preparePowerPointImage, type PowerPointImageFit } from './powerpoint-image-fit.js'
+
+const prefetchedImage = Symbol('PC-prefetched PowerPoint image')
+
+/** Only the authenticated remote-tool handler may attach bytes; this is not model input. */
+export function withPrefetchedPowerPointImage(call: AgentToolCall): AgentToolCall {
+  if (!Object.hasOwn(call.input, '_wiswork_image_base64')) return call
+  const { _wiswork_image_base64: base64, ...input } = call.input
+  if (
+    call.name !== 'insert_web_image' ||
+    typeof base64 !== 'string' ||
+    !base64.length ||
+    base64.length > 240 * 1024 ||
+    base64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)
+  )
+    throw new Error('invalid_tool_input')
+  return Object.assign(
+    { ...call, input },
+    {
+      [prefetchedImage]: Uint8Array.from(atob(base64), (character) => character.charCodeAt(0)),
+    },
+  )
+}
 
 export interface PowerPointImageAdapter {
   snapshotSlide(
@@ -35,6 +59,10 @@ const point = (value: unknown) => {
     throw new Error('invalid_tool_input')
   return value
 }
+const imageFit = (value: unknown): PowerPointImageFit => {
+  if (value !== 'cover' && value !== 'contain') throw new Error('invalid_tool_input')
+  return value
+}
 const input = exactObject({
   path: stringField({ minLength: 1, maxLength: 512 }),
   slide_index: integerField({ min: 0, max: 100_000 }),
@@ -42,11 +70,23 @@ const input = exactObject({
   top: point,
   width: point,
   height: point,
+  fit: optionalField(imageFit),
+  explanation: optionalField(stringField({ maxLength: 100 })),
+})
+const webInput = exactObject({
+  url: stringField({ minLength: 1, maxLength: 2_048 }),
+  slide_index: integerField({ min: 0, max: 100_000 }),
+  left: point,
+  top: point,
+  width: point,
+  height: point,
+  fit: optionalField(imageFit),
   explanation: optionalField(stringField({ maxLength: 100 })),
 })
 const tool = {
   name: 'insert-image',
-  description: 'Propose inserting a bounded VFS PNG or JPEG on a slide.',
+  description:
+    'Propose inserting a bounded VFS PNG or JPEG on a slide. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels. fit defaults to cover (center-crop without distortion); use contain to keep the entire image with transparent padding.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -56,9 +96,30 @@ const tool = {
       top: { type: 'number', minimum: 0, maximum: 2_000 },
       width: { type: 'number', minimum: 0, maximum: 2_000 },
       height: { type: 'number', minimum: 0, maximum: 2_000 },
+      fit: { type: 'string', enum: ['cover', 'contain'] },
       explanation: { type: 'string', maxLength: 100 },
     },
     required: ['path', 'slide_index', 'left', 'top', 'width', 'height'],
+    additionalProperties: false,
+  },
+}
+const webTool = {
+  name: 'insert_web_image',
+  description:
+    'Fetch and propose inserting a bounded PNG or JPEG URL returned by image_search. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels. fit defaults to cover (center-crop without distortion); use contain to keep the entire image with transparent padding. Compose text in clear space.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', maxLength: 2_048 },
+      slide_index: { type: 'integer', minimum: 0, maximum: 100_000 },
+      left: { type: 'number', minimum: 0, maximum: 2_000 },
+      top: { type: 'number', minimum: 0, maximum: 2_000 },
+      width: { type: 'number', minimum: 0, maximum: 2_000 },
+      height: { type: 'number', minimum: 0, maximum: 2_000 },
+      fit: { type: 'string', enum: ['cover', 'contain'] },
+      explanation: { type: 'string', maxLength: 100 },
+    },
+    required: ['url', 'slide_index', 'left', 'top', 'width', 'height'],
     additionalProperties: false,
   },
 }
@@ -70,6 +131,7 @@ function failed(name: string, error: unknown): ToolExecution {
     'image_mime_unsupported',
     'invalid_image',
     'vfs_not_found',
+    'image_fetch_unavailable',
     'office_api_unsupported',
     'cancelled',
   ].includes(message)
@@ -77,31 +139,67 @@ function failed(name: string, error: unknown): ToolExecution {
     : 'office_operation_failed'
   return { output: code, isError: true, mutated: false, summary: name }
 }
+
+async function fetchValidatedImage(
+  fetchImage: (url: string, signal?: AbortSignal) => Promise<Uint8Array>,
+  url: string,
+  signal?: AbortSignal,
+) {
+  try {
+    return await validateBoundedImageBytes(await fetchImage(url, signal))
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ['image_limit', 'image_mime_unsupported', 'invalid_image', 'cancelled'].includes(
+        error.message,
+      )
+    )
+      throw error
+    throw new Error('image_fetch_unavailable', { cause: error })
+  }
+}
 export function createPowerPointImportMediaSkill(options: {
   adapter: PowerPointImageAdapter
   proposals: StructuredProposalController
   vfs: InMemoryVfs
+  fetchImage?: (url: string, signal?: AbortSignal) => Promise<Uint8Array>
+  validateMutation?: (slideIndex: number) => string | undefined
 }): AgentSkill {
   return {
     id: 'office-powerpoint-import-media',
     systemPrompt:
-      'Image insertions use bounded VFS media, confirmation, stale-state checks, and semantic verification.',
-    tools: [tool],
+      'When insert_web_image is available, use it for an HTTPS image_url returned by image_search; use insert-image only for an attached VFS path. Images default to fit cover, which center-crops to fill the requested rectangle without distortion; use fit contain for uncropped images with transparent padding. Image insertions use bounded media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification. If a web image fails, do not retry the same URL; try at most one different image URL, then continue with a text or vector layout.',
+    tools: options.fetchImage ? [tool, webTool] : [tool],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failed(call.name, new Error('invalid_tool_input'))
       try {
         if (signal?.aborted) throw new Error('cancelled')
-        if (call.name !== 'insert-image') throw new Error('invalid_tool_input')
-        const value = input(call.input)
+        if (call.name !== 'insert-image' && call.name !== 'insert_web_image')
+          throw new Error('invalid_tool_input')
+        const local = call.name === 'insert-image' ? input(call.input) : undefined
+        const remote = call.name === 'insert_web_image' ? webInput(call.input) : undefined
+        const value = local ?? remote!
         if (value.width < 1 || value.height < 1) throw new Error('invalid_tool_input')
-        const image = await readBoundedImage(options.vfs, value.path)
+        const designError = options.validateMutation?.(value.slide_index)
+        if (designError)
+          return { output: designError, isError: true, mutated: false, summary: call.name }
+        const sourceImage =
+          local !== undefined
+            ? await readBoundedImage(options.vfs, local.path)
+            : prefetchedImage in call
+              ? await validateBoundedImageBytes(
+                  (call as AgentToolCall & { [prefetchedImage]: Uint8Array })[prefetchedImage],
+                )
+              : await fetchValidatedImage(options.fetchImage!, remote!.url, signal)
         const geometry = {
           left: value.left,
           top: value.top,
           width: value.width,
           height: value.height,
         }
+        const fit = value.fit ?? 'cover'
+        const image = await preparePowerPointImage(sourceImage, geometry, fit, signal)
         const before = await options.adapter.snapshotSlide(value.slide_index, signal)
         let id: string | undefined
         const recover = async () => {
@@ -115,15 +213,19 @@ export function createPowerPointImportMediaSkill(options: {
           }
         }
         const proposal = options.proposals.propose({
+          powerPointMutation: { indexes: [value.slide_index], scaffold: false },
           operation: call.name,
           toolName: call.name,
           title: value.explanation || 'Insert image',
           preview: {
-            path: value.path,
+            source: local?.path ?? remote!.url,
             mime: image.mime,
             bytes: image.bytes,
-            sourceWidth: image.width,
-            sourceHeight: image.height,
+            sourceWidth: sourceImage.width,
+            sourceHeight: sourceImage.height,
+            preparedWidth: image.width,
+            preparedHeight: image.height,
+            fit,
             ...geometry,
           },
           impact: { host: 'powerpoint', targets: [before.slideId], count: 1 },

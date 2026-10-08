@@ -1,12 +1,35 @@
 import { MASTER_PATTERN_TYPES, masterOperationKey } from './presentation-master-program.js'
-import type { AgentSkill, AgentToolDef, ToolExecution } from '@wiswork/agent-core'
+import type { AgentToolDef } from '@wiswork/agent-core'
 import { parsePresentationDeck, PRESENTATION_DECK_SCHEMA } from '@wiswork/pptx-engine/presentation'
+import {
+  encodeOfficeScreenshotResult,
+  formatPresentationDesignReadinessFailure,
+  parsePresentationDesignContract,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+  PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  renderPresentationDesignContract,
+  transitionPresentationDesignContract,
+  validatePresentationDesignReadiness,
+  type AgentSkill,
+  type AgentImage,
+  type PresentationDesignContract,
+  type ToolExecution,
+} from '@wiswork/agent-core'
+import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
+import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
 import { readBoundedImage } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
+import {
+  createOfficePowerPointVerification,
+  canonicalPowerPointVerificationBinding,
+  powerPointProposalFingerprint,
+  type OfficePowerPointVerificationAuthority,
+  type OfficePowerPointVisualReviewer,
+} from './powerpoint-verification.js'
 import {
   MAX_POWERPOINT_RESULT_BYTES,
   type PowerPointDeclarativeOperation,
@@ -45,6 +68,12 @@ import { officeOperationsForSlideIR } from './presentation-office-ir.js'
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
+const visibleDesignDocument = (contract: PresentationDesignContract): string =>
+  renderPresentationDesignContract(contract).replace(
+    /\n?<!-- WISWORK_PRESENTATION_DESIGN_CONTRACT:[^\n]* -->/g,
+    '',
+  )
+
 const PROGRAM_TOOLS = new Set([
   'execute_office_js',
   'add_slide_ir_objects',
@@ -66,6 +95,20 @@ const verifyInput = exactObject({
   slide_index: optionalField(integerField({ min: 0, max: MAX_SLIDE_INDEX })),
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
+const slideBackgroundInput = exactObject({
+  slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
+  color: (value: unknown) => {
+    if (typeof value !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(value))
+      throw new Error('invalid_tool_input')
+    return value
+  },
+  transparency: optionalField((value: unknown) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error('invalid_tool_input')
+    return value
+  }),
+  explanation: optionalField(stringField({ maxLength: 100 })),
+})
 const textEditInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   shape_id: stringField({ minLength: 1, maxLength: 256 }),
@@ -73,10 +116,20 @@ const textEditInput = exactObject({
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
 const slideProperties = {
-  slide_index: { type: 'integer', minimum: 0, maximum: MAX_SLIDE_INDEX },
+  slide_index: {
+    type: 'integer',
+    minimum: 0,
+    maximum: MAX_SLIDE_INDEX,
+    description: "Zero-based slide index: the user's slide 1 is index 0.",
+  },
   explanation: { type: 'string', maxLength: 50 },
 } as const
-const operationSlideIndex = { type: 'integer', minimum: 0, maximum: MAX_SLIDE_INDEX } as const
+const operationSlideIndex = {
+  type: 'integer',
+  minimum: 0,
+  maximum: MAX_SLIDE_INDEX,
+  description: "Zero-based slide index: the user's slide 1 is index 0.",
+} as const
 const operationShapeId = { type: 'string', minLength: 1, maxLength: 256 } as const
 const geometryProperties = {
   left: { type: 'number' },
@@ -109,9 +162,23 @@ const declarativeProgramSchema = {
           ),
           exactOperation(
             {
+              op: { type: 'string', enum: ['set_shape_text_style'] },
+              slide_index: operationSlideIndex,
+              shape_id: operationShapeId,
+              color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+              fontFamily: { type: 'string', minLength: 1, maxLength: 128 },
+              fontSize: { type: 'number', minimum: 1, maximum: 400 },
+              bold: { type: 'boolean' },
+              italic: { type: 'boolean' },
+            },
+            ['op', 'slide_index', 'shape_id'],
+          ),
+          exactOperation(
+            {
               op: { type: 'string', enum: ['set_shape_geometry'] },
               slide_index: operationSlideIndex,
               shape_id: operationShapeId,
+              reference_slide_index: operationSlideIndex,
               ...geometryProperties,
             },
             ['op', 'slide_index', 'shape_id', 'left', 'top', 'width', 'height'],
@@ -122,10 +189,12 @@ const declarativeProgramSchema = {
               slide_index: operationSlideIndex,
               name: { type: 'string', minLength: 1, maxLength: 256 },
               text: { type: 'string', maxLength: 12_000 },
+              fontFamily: { type: 'string', minLength: 1, maxLength: 128 },
               fontFace: { type: 'string', minLength: 1, maxLength: 128 },
               fontSize: { type: 'number', minimum: 6, maximum: 96 },
-              color: { type: 'string', pattern: '^[0-9A-Fa-f]{6}$' },
+              color: { type: 'string', pattern: '^#?[0-9A-Fa-f]{6}$' },
               bold: { type: 'boolean' },
+              italic: { type: 'boolean' },
               align: { type: 'string', enum: ['left', 'center', 'right'] },
               margin: { type: 'number', minimum: 0, maximum: 72 },
               verticalAlignment: { type: 'string', enum: ['top', 'middle', 'bottom'] },
@@ -200,13 +269,6 @@ const declarativeProgramSchema = {
               shape_id: operationShapeId,
             },
             ['op', 'slide_index', 'shape_id'],
-          ),
-          exactOperation(
-            {
-              op: { type: 'string', enum: ['duplicate_slide'] },
-              slide_index: operationSlideIndex,
-            },
-            ['op', 'slide_index'],
           ),
         ],
       },
@@ -338,6 +400,17 @@ const masterProgramSchema = {
 } as const
 const tools = [
   {
+    name: 'get_presentation_state',
+    description:
+      'Read the bounded PowerPoint document state before planning or editing. Returns slide count, selected zero-based slide indices, supported PowerPoint API versions, and measured slideWidth/slideHeight in points when supported. Use these dimensions for layouts; screenshot pixels are not Office coordinates.',
+    inputSchema: {
+      type: 'object',
+      properties: { explanation: { type: 'string', maxLength: 50 } },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'inspect_slide_masters',
     description: 'Inspect bounded native slide masters, layouts, backgrounds, and theme colors.',
     inputSchema: {
@@ -359,6 +432,31 @@ const tools = [
     },
   },
   {
+    name: 'review_slide_screenshot',
+    description:
+      'After visually inspecting the latest screenshot, record the result against every DESIGN.md acceptance ID for that slide. A failed review keeps production blocked for repair.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...slideProperties,
+        acceptance_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: { type: 'string', minLength: 1, maxLength: 80 },
+        },
+        passed: { type: 'boolean' },
+        issues: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string', minLength: 1, maxLength: 500 },
+        },
+      },
+      required: ['slide_index', 'acceptance_ids', 'passed'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_slide_shapes',
     description: 'List stable shape IDs, types, and geometry on one slide.',
     inputSchema: {
@@ -370,7 +468,8 @@ const tools = [
   },
   {
     name: 'read_slide_text',
-    description: 'Read bounded text from a shape selected by stable ID.',
+    description:
+      'Read bounded text and available current font/style readback from a shape selected by stable ID. Use the actual style to repair a failed font change without replaying the batch.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -393,9 +492,143 @@ const tools = [
     },
   },
   {
+    name: 'set_slide_background',
+    description:
+      'Propose setting one slide background to a solid color using the native PowerPoint background API.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...slideProperties,
+        color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+        transparency: { type: 'number', minimum: 0, maximum: 1 },
+      },
+      required: ['slide_index', 'color'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ask_clarification',
+    description:
+      'For a whole new deck, ask one concise multiple-choice question at a time about audience, focus, style, or page count. Wait for each answer before asking the next question or continuing with plan_deck. Skip only when the user already supplied or delegated these choices.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 1,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', minLength: 1, maxLength: 40 },
+              label: { type: 'string', minLength: 1, maxLength: 300 },
+              description: { type: 'string', maxLength: 300 },
+              options: {
+                type: 'array',
+                minItems: 2,
+                maxItems: 5,
+                items: {
+                  oneOf: [
+                    { type: 'string', minLength: 1, maxLength: 120 },
+                    {
+                      type: 'object',
+                      properties: {
+                        label: { type: 'string', minLength: 1, maxLength: 120 },
+                        description: { type: 'string', maxLength: 300 },
+                      },
+                      required: ['label'],
+                      additionalProperties: false,
+                    },
+                  ],
+                },
+              },
+            },
+            required: ['id', 'label', 'options'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['questions'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'plan_deck',
+    description:
+      'Record the complete narrative and visual plan before creating or substantially rebuilding a presentation. This tool never edits PowerPoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        core_hook: { type: 'string', minLength: 1, maxLength: 500 },
+        style: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 6_000,
+          description:
+            'Complete DESIGN.md body: concrete color tokens, type hierarchy, margins/grid, image treatment, density limits, layout families, and composition rules',
+        },
+        pages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', minLength: 1, maxLength: 300 },
+              type: { type: 'string', maxLength: 50 },
+              brief: { type: 'string', minLength: 1, maxLength: 2_000 },
+              layout: { type: 'string', minLength: 1, maxLength: 100 },
+              image_queries: {
+                type: 'array',
+                items: { type: 'string', minLength: 1, maxLength: 200 },
+              },
+              purpose: { type: 'string', minLength: 1, maxLength: 500 },
+              visual: { type: 'string', minLength: 1, maxLength: 1_000 },
+              evidence: {
+                type: 'array',
+                maxItems: 8,
+                items: { type: 'string', minLength: 1, maxLength: 500 },
+              },
+              acceptance: {
+                type: 'array',
+                maxItems: 8,
+                items: { type: 'string', minLength: 1, maxLength: 300 },
+              },
+              density: { type: 'string', enum: ['low', 'medium', 'high'] },
+            },
+            required: ['title', 'brief', 'layout', 'purpose', 'visual', 'acceptance', 'density'],
+            additionalProperties: false,
+          },
+        },
+        prototype_pages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: { type: 'integer', minimum: 0 },
+          description:
+            'Zero-based indexes of the cover, representative content page, and most complex visual page; use every page when fewer than three',
+        },
+        contract: {
+          ...PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+          properties: {
+            ...(PRESENTATION_DESIGN_CONTRACT_SCHEMA.properties as Record<string, unknown>),
+            status: { type: 'string', enum: ['draft', 'ready'] },
+          },
+          description:
+            'Submit draft or ready only. The host owns producing/verified. Use review_slide_screenshot to record visual reviews, not plan_deck. Unknown future fields are ignored for mixed-version compatibility.',
+        },
+      },
+      anyOf: [
+        { required: ['contract'] },
+        { required: ['core_hook', 'style', 'pages', 'prototype_pages'] },
+      ],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Native additions, modifications, and duplication require a durable paired-PC savepoint; use one page of pure additions with explicit styling, or validated SlideIR. Mixed modification/addition and multi-page addition programs are rejected before writing. Supported operations are set_shape_text, set_shape_geometry, add_text_box, add_geometric_shape, add_native_table (bounded string cells), delete_shape, and duplicate_slide (it must be the only operation).',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Native additions, modifications, and duplication require a durable paired-PC savepoint; use one page of pure additions with explicit styling, or validated SlideIR. Mixed modification/addition and multi-page addition programs are rejected before writing. Supported operations are set_shape_text, set_shape_text_style, set_shape_geometry, add_text_box, add_geometric_shape, add_native_table (bounded string cells), delete_shape, and duplicate_slide (it must be the only operation). For design-contract production use the dedicated duplicate_slide tool.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -620,6 +853,8 @@ function errorCode(error: unknown, write = false): string {
   )
     return code
   if (code === 'office_verify_failed') return code
+  if (code === 'office_screenshot_unavailable') return code
+  if (code === 'tool_cancelled') return 'cancelled'
   return write ? 'office_write_failed' : 'office_read_failed'
 }
 function validPng(value: unknown): value is string {
@@ -642,12 +877,7 @@ function base64Bytes(value: string): number {
 }
 
 function fingerprint(value: string): string {
-  let result = 0x811c9dc5
-  for (let index = 0; index < value.length; index += 1) {
-    result ^= value.charCodeAt(index)
-    result = Math.imul(result, 0x01000193)
-  }
-  return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
+  return powerPointProposalFingerprint(value)
 }
 
 function parseMasterProgram(value: unknown): PowerPointMasterOperation[] {
@@ -904,6 +1134,9 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'align',
     'margin',
     'verticalAlignment',
+    'fontFamily',
+    'italic',
+    'reference_slide_index',
   ])
   const operation = root
   if (
@@ -927,11 +1160,28 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
   if (operation.op === 'set_shape_geometry') {
     if (
       Object.keys(operation).some(
-        (key) => !['op', 'slide_index', 'shape_id', 'left', 'top', 'width', 'height'].includes(key),
+        (key) =>
+          ![
+            'op',
+            'slide_index',
+            'shape_id',
+            'left',
+            'top',
+            'width',
+            'height',
+            'reference_slide_index',
+          ].includes(key),
       ) ||
       typeof operation.shape_id !== 'string' ||
       !operation.shape_id ||
       operation.shape_id.length > 256
+    )
+      throw new Error('invalid_tool_input')
+    if (
+      operation.reference_slide_index !== undefined &&
+      (!Number.isInteger(operation.reference_slide_index) ||
+        (operation.reference_slide_index as number) < 0 ||
+        (operation.reference_slide_index as number) > MAX_SLIDE_INDEX)
     )
       throw new Error('invalid_tool_input')
     finiteGeometry()
@@ -943,9 +1193,74 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       top: operation.top as number,
       width: operation.width as number,
       height: operation.height as number,
+      ...(Number.isInteger(operation.reference_slide_index)
+        ? { reference_slide_index: operation.reference_slide_index as number }
+        : {}),
+    }
+  }
+  if (operation.op === 'set_shape_text_style') {
+    const allowed = [
+      'op',
+      'slide_index',
+      'shape_id',
+      'color',
+      'fontFamily',
+      'fontSize',
+      'bold',
+      'italic',
+    ]
+    if (
+      Object.keys(operation).some((key) => !allowed.includes(key)) ||
+      typeof operation.shape_id !== 'string' ||
+      !operation.shape_id ||
+      (Object.hasOwn(operation, 'color') &&
+        (typeof operation.color !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(operation.color))) ||
+      (Object.hasOwn(operation, 'fontFamily') &&
+        (typeof operation.fontFamily !== 'string' ||
+          !operation.fontFamily ||
+          operation.fontFamily.length > 128)) ||
+      (Object.hasOwn(operation, 'fontSize') &&
+        (typeof operation.fontSize !== 'number' ||
+          !Number.isFinite(operation.fontSize) ||
+          operation.fontSize < 1 ||
+          operation.fontSize > 400)) ||
+      (Object.hasOwn(operation, 'bold') && typeof operation.bold !== 'boolean') ||
+      (Object.hasOwn(operation, 'italic') && typeof operation.italic !== 'boolean')
+    )
+      throw new Error('invalid_tool_input')
+    const style = {
+      ...(typeof operation.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(operation.color)
+        ? { color: operation.color.toUpperCase() }
+        : {}),
+      ...(typeof operation.fontFamily === 'string' && operation.fontFamily.length <= 128
+        ? { fontFamily: operation.fontFamily }
+        : {}),
+      ...(typeof operation.fontSize === 'number' &&
+      operation.fontSize >= 1 &&
+      operation.fontSize <= 400
+        ? { fontSize: operation.fontSize }
+        : {}),
+      ...(typeof operation.bold === 'boolean' ? { bold: operation.bold } : {}),
+      ...(typeof operation.italic === 'boolean' ? { italic: operation.italic } : {}),
+    }
+    if (!Object.keys(style).length) throw new Error('invalid_tool_input')
+    return {
+      op: 'set_shape_text_style',
+      slide_index: operation.slide_index as number,
+      shape_id: operation.shape_id,
+      ...style,
     }
   }
   if (operation.op === 'add_text_box') {
+    if (operation.fontFamily !== undefined) {
+      if (operation.fontFace !== undefined && operation.fontFace !== operation.fontFamily)
+        throw new Error('invalid_tool_input')
+      operation.fontFace = operation.fontFamily
+      delete operation.fontFamily
+    }
+    if (typeof operation.color === 'string' && operation.color.startsWith('#'))
+      operation.color = operation.color.slice(1)
+
     if (
       Object.keys(operation).some(
         (key) =>
@@ -962,6 +1277,7 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
             'fontSize',
             'color',
             'bold',
+            'italic',
             'align',
             'margin',
             'verticalAlignment',
@@ -984,6 +1300,7 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       (operation.color !== undefined &&
         (typeof operation.color !== 'string' || !/^[0-9A-Fa-f]{6}$/.test(operation.color))) ||
       (operation.bold !== undefined && typeof operation.bold !== 'boolean') ||
+      (operation.italic !== undefined && typeof operation.italic !== 'boolean') ||
       (operation.align !== undefined &&
         !['left', 'center', 'right'].includes(String(operation.align))) ||
       (operation.margin !== undefined &&
@@ -1009,6 +1326,7 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       ...(operation.fontSize !== undefined ? { fontSize: operation.fontSize as number } : {}),
       ...(operation.color !== undefined ? { color: operation.color as string } : {}),
       ...(operation.bold !== undefined ? { bold: operation.bold as boolean } : {}),
+      ...(operation.italic !== undefined ? { italic: operation.italic as boolean } : {}),
       ...(operation.align !== undefined
         ? { align: operation.align as 'left' | 'center' | 'right' }
         : {}),
@@ -1212,6 +1530,7 @@ export function createPowerPointSkill(options: {
     explanation?: string,
     signal?: AbortSignal,
     toolName?: 'duplicate_slide' | 'execute_office_js',
+    validate?: (signal?: AbortSignal) => Promise<boolean>,
   ): Promise<{ proposalId: string; changeId: string; status: string }>
   durableModify?(
     operations: import('./presentation-existing-batch.js').NativeModifyOperation[],
@@ -1232,7 +1551,12 @@ export function createPowerPointSkill(options: {
       expected: PresentationExistingChartChange | undefined,
     ): Promise<void>
   }
-}): AgentSkill {
+  verificationAuthority?: OfficePowerPointVerificationAuthority
+  visualReviewer?: OfficePowerPointVisualReviewer
+  prepareScreenshot?: (image: AgentImage, signal?: AbortSignal) => Promise<AgentImage>
+  presentationFlags?: PresentationVerificationFlags
+  presentationTelemetry?: (event: PresentationTelemetryEvent) => void
+}): AgentSkill & { validateImageMutation: (slideIndex: number) => string | undefined } {
   const nativeExecution = options.nativeAddSavepoint
     ? createPresentationNativeAddExecution({
         ...options.nativeAddSavepoint,
@@ -1304,8 +1628,238 @@ export function createPowerPointSkill(options: {
       },
     }),
   )
-  const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
-  const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
+  const mutationTools = new Set([
+    'set_slide_background',
+    'execute_office_js',
+    'edit_slide_text',
+    'edit_slide_xml',
+    'edit_slide_chart',
+    'edit_slide_master',
+    'edit_slide_master_xml',
+    'duplicate_slide',
+  ])
+  let mutationRevision = 0
+  let screenshotRevision = 0
+  let verificationRevision = 0
+  let knownSlideCount = 0
+  let canvas: { slideWidth: number; slideHeight: number; coordinateUnit: 'pt' } | undefined
+  let unknownMutationPages = false
+  let activeDesignContract: PresentationDesignContract | undefined
+  let activeDesignContractIsModern = false
+  const dirtySlideIndexes = new Set<number>()
+  const builtDesignSlides = new Set<number>()
+  const appliedUnverifiedDesignSlides = new Set<number>()
+  const pendingDesignReviews = new Set<number>()
+  const repairRequiredDesignReviews = new Set<number>()
+  const failedScreenshotSlides = new Set<number>()
+  const reviewRecovery = () => ({
+    nextTool: failedScreenshotSlides.size
+      ? 'list_slide_shapes'
+      : [...pendingDesignReviews].some((index) => dirtySlideIndexes.has(index))
+        ? 'screenshot_slide'
+        : repairRequiredDesignReviews.size
+          ? 'list_slide_shapes'
+          : pendingDesignReviews.size
+            ? 'review_slide_screenshot'
+            : !activeDesignContract || activeDesignContract.status === 'draft'
+              ? 'plan_deck'
+              : builtDesignSlides.size < activeDesignContract.slides.length
+                ? 'get_presentation_state'
+                : 'verify_slides',
+    pendingReviews: [...pendingDesignReviews]
+      .sort((a, b) => a - b)
+      .map((index) => ({
+        slide_index: index,
+        acceptance_ids:
+          activeDesignContract?.slides[index]?.acceptance.map((rule) => rule.id) ?? [],
+        needsScreenshot: dirtySlideIndexes.has(index),
+        needsRepair: repairRequiredDesignReviews.has(index),
+        ...(failedScreenshotSlides.has(index) ? { screenshotUnavailable: true } : {}),
+      })),
+    ...(failedScreenshotSlides.size
+      ? { failedScreenshotSlideIndexes: [...failedScreenshotSlides].sort((a, b) => a - b) }
+      : {}),
+    instruction: failedScreenshotSlides.size
+      ? 'The screenshot is unavailable for visual inspection. Inspect list_slide_shapes and read_slide_text on the affected page. Existing built or pending pages remain writable: repair the image or layout on that same page, then retry screenshot_slide and review its real image. Do not repeat an unchanged failing screenshot or claim that all writes are blocked. If the native host still cannot render, report that page as blocked; final verification remains required.'
+      : pendingDesignReviews.size
+        ? 'Inspect each current screenshot, then call review_slide_screenshot with its acceptance_ids and the actual result. Repair failed pages and screenshot again. Do not resubmit plan_deck to record a review.'
+        : !activeDesignContract || activeDesignContract.status === 'draft'
+          ? 'Submit the complete validated plan with draft or ready. Producing and verified are host-owned states.'
+          : builtDesignSlides.size < activeDesignContract.slides.length
+            ? 'Read the current presentation and continue the remaining production under this contract. Do not resubmit plan_deck to record progress.'
+            : 'Call verify_slides and resolve remaining issues before reporting completion.',
+  })
+  const duplicationProposals = new Set<string>()
+  const proposalDesignSlides = new Map<string, { indexes: number[]; scaffold: boolean }>()
+  const mutationSlideIndexes = (call: { name: string; input: Record<string, unknown> }) => {
+    if (['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
+      return Array.from({ length: knownSlideCount }, (_, index) => index)
+    if (call.name === 'execute_office_js') {
+      const program = call.input.program
+      if (!program || typeof program !== 'object' || Array.isArray(program)) return []
+      const operations = (program as Record<string, unknown>).operations
+      if (!Array.isArray(operations)) return []
+      return operations.flatMap((operation) => {
+        if (!operation || typeof operation !== 'object' || Array.isArray(operation)) return []
+        const index = (operation as Record<string, unknown>).slide_index
+        return Number.isSafeInteger(index) ? [index as number] : []
+      })
+    }
+    const index = call.input.slide_index
+    if (!Number.isSafeInteger(index)) return []
+    // Duplicating reads the source but only materializes the newly inserted slide.
+    // Counting the source as produced deadlocks the next batch and can report a
+    // contract complete before all planned pages exist.
+    return call.name === 'duplicate_slide' ? [(index as number) + 1] : [index as number]
+  }
+  const isMac = options.platform?.toLowerCase() === 'mac'
+  const masterXmlEditingSupported = !isMac
+  const nativeMasterEditingSupported = !isMac && options.nativeMasterEditingSupported !== false
+  const presentation =
+    !isMac &&
+    options.verificationAuthority &&
+    options.presentationFlags?.verifiedCompletion !== false
+      ? {
+          ...createOfficePowerPointVerification({
+            authority: options.verificationAuthority,
+            platform: options.platform,
+            reviewer: options.visualReviewer,
+            flags: options.presentationFlags,
+            telemetry: options.presentationTelemetry,
+          }),
+          batchScoped: true,
+        }
+      : undefined
+  const recordDesignMutation = (
+    indexes: readonly number[],
+    scaffold: boolean,
+    confirmed = true,
+  ) => {
+    if (!activeDesignContractIsModern || !activeDesignContract) return
+    if (confirmed && activeDesignContract.status === 'ready')
+      activeDesignContract = transitionPresentationDesignContract(activeDesignContract, 'producing')
+    else if (activeDesignContract.status === 'verified')
+      activeDesignContract = { ...activeDesignContract, status: 'producing' }
+    for (const index of indexes) {
+      if (!scaffold) {
+        appliedUnverifiedDesignSlides.delete(index)
+        if (confirmed) {
+          builtDesignSlides.add(index)
+          repairRequiredDesignReviews.delete(index)
+          failedScreenshotSlides.delete(index)
+        }
+        pendingDesignReviews.add(index)
+      }
+      dirtySlideIndexes.add(index)
+    }
+    mutationRevision++
+  }
+  const designProductionError = (
+    indexes: readonly number[],
+    inserting: boolean,
+  ): string | undefined => {
+    if (!activeDesignContractIsModern || !activeDesignContract) return
+    const targets = [...new Set(indexes)]
+    if (
+      targets.length === 0 ||
+      targets.some((index) => index < 0 || index >= activeDesignContract!.slides.length)
+    )
+      return 'design_contract_scope_mismatch'
+    // Repair is not expansion. Previously reviewed pages must be writable again;
+    // confirmation invalidates their screenshot/review just like any other write.
+    if (!inserting && targets.every((index) => builtDesignSlides.has(index))) return
+    if (inserting && targets.some((index) => builtDesignSlides.has(index)))
+      return 'design_contract_batch_mismatch'
+    if (targets.every((index) => pendingDesignReviews.has(index))) return
+    const newTargets = targets.filter((index) => !builtDesignSlides.has(index))
+    const prototypes = new Set(activeDesignContract.prototypePages.map((number) => number - 1))
+    if (![...prototypes].every((index) => builtDesignSlides.has(index)))
+      return newTargets.every((index) => prototypes.has(index))
+        ? undefined
+        : 'design_contract_prototype_required'
+    if (new Set([...pendingDesignReviews, ...targets]).size > 3)
+      return 'design_contract_review_required'
+    // Office exposes slide creation as one confirmed duplicate proposal at a time.
+    // Permit those sequential writes; pendingDesignReviews still caps expansion and
+    // forces screenshot review before the agent can move beyond the current batch.
+    if (targets.length > 3) return 'design_contract_batch_size'
+  }
+  options.proposals.subscribeAudit?.((event) => {
+    if (event.kind === 'proposed' && event.powerPointMutation)
+      proposalDesignSlides.set(event.id, {
+        ...event.powerPointMutation,
+        indexes: [...event.powerPointMutation.indexes],
+      })
+    if (event.kind === 'settled') {
+      const mutation = proposalDesignSlides.get(event.id)
+      proposalDesignSlides.delete(event.id)
+      if (event.status === 'confirmed' && mutation) {
+        recordDesignMutation(mutation.indexes, mutation.scaffold)
+        if (duplicationProposals.has(event.id) && knownSlideCount > 0) knownSlideCount++
+      } else if (mutation && ['failed', 'applied_unverified'].includes(event.status)) {
+        // Verification can fail after Office has applied some or all operations. Keep the
+        // page unbuilt until a fresh screenshot review confirms an applied-unverified write.
+        recordDesignMutation(mutation.indexes, mutation.scaffold, false)
+        if (
+          event.status === 'applied_unverified' &&
+          event.safeCode !== 'office_write_pending' &&
+          !mutation.scaffold
+        )
+          for (const index of mutation.indexes) {
+            appliedUnverifiedDesignSlides.add(index)
+            // A known applied repair still needs its new screenshot. A pending or
+            // failed write cannot stand in for a repair of the rejected image.
+            repairRequiredDesignReviews.delete(index)
+            failedScreenshotSlides.delete(index)
+          }
+      }
+    }
+    if (event.kind === 'settled') duplicationProposals.delete(event.id)
+    if (!presentation) return
+    if (event.kind === 'proposed') presentation.recordProposal(event)
+    else if (event.kind === 'settled') presentation.recordSettlement(event)
+  })
+  async function trackDurableProposal<T>(
+    result: T,
+    indexes: number[],
+    scaffold = false,
+    duplicate = false,
+    call?: Parameters<AgentSkill['executeTool']>[0],
+  ): Promise<T> {
+    if (result && typeof result === 'object') {
+      const value = result as Record<string, unknown>
+      const id = typeof value.proposalId === 'string' ? value.proposalId : value.id
+      if (typeof id === 'string') {
+        proposalDesignSlides.set(id, { indexes, scaffold })
+        if (duplicate) duplicationProposals.add(id)
+        if (presentation && call && ['execute_office_js', 'edit_slide_text'].includes(call.name)) {
+          const operations =
+            call.name === 'edit_slide_text'
+              ? [call.input]
+              : parseDeclarativeProgram(
+                  declarativeInput(call.input, { slide: false, explanationMax: 100 }).code,
+                  parsePowerPointOperation,
+                ).operations
+          const targets = await Promise.all(
+            operations.map(async (operation) => {
+              const page = await options.adapter.snapshotSlide(operation.slide_index as number)
+              return 'shape_id' in operation
+                ? `${page.slideId}/${operation.shape_id}`
+                : page.slideId
+            }),
+          )
+          presentation.recordProposal({
+            id,
+            toolName: call.name,
+            targets,
+            fingerprint: options.proposals.pending()?.fingerprint ?? '',
+            verificationBinding: canonicalPowerPointVerificationBinding(call, targets),
+          })
+        }
+      }
+    }
+    return result
+  }
   async function proposePackageEdit(
     _toolName: string,
     kind: PackageEditKind,
@@ -1329,6 +1883,10 @@ export function createPowerPointSkill(options: {
         signal,
       )
     }
+    await trackDurableProposal(
+      proposal,
+      kind === 'master' ? Array.from({ length: knownSlideCount }, (_, i) => i) : [slideIndex],
+    )
     return {
       output: boundedJson(proposal),
       mutated: false,
@@ -1851,9 +2409,25 @@ export function createPowerPointSkill(options: {
 
   return {
     id: 'office-powerpoint',
+    validateImageMutation: (slideIndex) => {
+      if (!Number.isSafeInteger(slideIndex) || slideIndex < 0) return 'invalid_tool_input'
+      if (knownSlideCount > 0 && slideIndex >= knownSlideCount) return 'invalid_tool_input'
+      const error = designProductionError([slideIndex], false)
+      return error === 'design_contract_review_required'
+        ? boundedJson({ error, ...reviewRecovery() })
+        : error
+    },
+    repeatFinalResponseCorrection: true,
     systemPrompt:
+      `${PRESENTATION_DESIGN_WORKFLOW_PROMPT}\n` +
+      'Follow the same complete workflow as WisWork Slides in this agent run: understand the document with get_presentation_state and bounded reads, and inspect the presentation before planning; for a new deck, you must call ask_clarification for missing audience, focus, style, and page-count choices unless the user already supplied or delegated them; use plan_deck before the first mutation to record the narrative and visual plan; run web_search and image_search for needed facts and visuals; implement the complete plan with bounded slide edits; screenshot every created or changed slide and inspect the native images; repair concrete clipping, overlap, hierarchy, spacing, contrast, and balance defects; screenshot every repaired slide again; then call verify_slides after the approved build before reporting completion. A screenshot call alone is not a visual pass: inspect its image and keep the screenshot-repair-screenshot loop in this same run until the checked pages are satisfactory or a concrete blocker remains. Never end the run expecting another user message or host post-processing to finish the deck. All slide_index values are zero-based, so the user’s first slide is index 0. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
-      ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
+      ' Use the measured slideWidth and slideHeight from get_presentation_state for every layout; coordinates are points, not screenshot pixels. Never assume a 720x405 or 960x540 canvas. If dimensions are unavailable, obtain the actual size before positioning content. A full-bleed image must cover the actual canvas, not only its upper-left area. Plan text and imagery together: preserve image proportions, leave deliberate clear space for titles, and use a contrasting text panel when the photo is too busy or bright. Inspect the entire screenshot including right and bottom edges; accidental white bands, blank planned pages, distorted images, and unreadable text over photos fail visual review. Do not change font families across a batch merely for styling; use the current family when font readback fails and repair size, color, spacing, and background separately.' +
+      ' Submit plan_deck with draft or ready only; producing and verified are host-owned states. After inspecting each screenshot call review_slide_screenshot with its acceptance_ids; screenshot_slide and verify_slides do not register a visual review. Do not resubmit plan_deck to record a review.' +
+      ' ' +
+      (isMac
+        ? 'On PowerPoint for Mac, build new decks with slide-level tools and never call slide-master tools; finish with screenshot_slide and verify_slides.'
+        : 'Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance.'),
     get tools() {
       return [
         ...tools.filter(
@@ -1876,8 +2450,34 @@ export function createPowerPointSkill(options: {
         ...(nativeExecution ? nativeTools : []),
         ...(nativeRestoration ? [nativeRestorationTool] : []),
         ...(nativeRelease ? [nativeReleaseTool] : []),
-      ]
+      ].map((tool) => {
+        const schema = tool.inputSchema as {
+          properties?: { slide_index?: Record<string, unknown> }
+        }
+        if (schema.properties?.slide_index)
+          schema.properties.slide_index.description ??=
+            'Zero-based slide index; the first slide is index 0.'
+        return tool
+      })
     },
+    buildContext: () =>
+      (canvas ? `<presentation canvas>\n${boundedJson(canvas)}\n</presentation canvas>\n` : '') +
+      (activeDesignContract
+        ? `<active presentation design contract>\n${boundedJson(activeDesignContract)}\n</active presentation design contract>\n<presentation review progress>\n${boundedJson(reviewRecovery())}\n</presentation review progress>`
+        : ''),
+    reviewFinalResponse(context) {
+      if (!context.mutated) return undefined
+      if (unknownMutationPages)
+        return '[System correction] Read the presentation state, then screenshot every slide affected by the master change.'
+      if (failedScreenshotSlides.size) return `[System correction] ${boundedJson(reviewRecovery())}`
+      if (dirtySlideIndexes.size)
+        return `[System correction] Continue the WisWork Slides quality loop now: call screenshot_slide for every created or changed slide (${[...dirtySlideIndexes].map((index) => index + 1).join(', ')}), inspect each native image, repair concrete defects, and screenshot each repaired slide again before finishing.`
+      if (pendingDesignReviews.size) return `[System correction] ${boundedJson(reviewRecovery())}`
+      if (verificationRevision < mutationRevision)
+        return '[System correction] The changed slides have been visually inspected. Call verify_slides now and resolve any remaining failure before reporting completion.'
+      return undefined
+    },
+    ...(presentation ? { presentation } : {}),
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failure(
@@ -2013,6 +2613,163 @@ export function createPowerPointSkill(options: {
             summary: 'Proposed durable native addition continuation',
           }
         }
+        if (call.name === 'ask_clarification')
+          return failure(call.name, 'questionnaire_unavailable')
+        if (call.name === 'get_presentation_state') {
+          verifyInput(call.input)
+          const state = await options.adapter.getPresentationState(signal)
+          knownSlideCount = state.slideCount
+          canvas =
+            state.coordinateUnit === 'pt' &&
+            typeof state.slideWidth === 'number' &&
+            typeof state.slideHeight === 'number' &&
+            Number.isFinite(state.slideWidth) &&
+            Number.isFinite(state.slideHeight) &&
+            state.slideWidth > 0 &&
+            state.slideHeight > 0
+              ? {
+                  slideWidth: state.slideWidth,
+                  slideHeight: state.slideHeight,
+                  coordinateUnit: 'pt',
+                }
+              : undefined
+          if (unknownMutationPages) {
+            for (let index = 0; index < knownSlideCount; index++) dirtySlideIndexes.add(index)
+            unknownMutationPages = false
+          }
+          return {
+            output: boundedJson(state),
+            mutated: false,
+            summary: 'Read PowerPoint presentation state',
+          }
+        }
+        if (call.name === 'plan_deck') {
+          let contract: PresentationDesignContract
+          try {
+            contract = parsePresentationDesignContract(call.input.contract ?? call.input)
+          } catch {
+            return failure(call.name, 'invalid_tool_input')
+          }
+          const readiness = validatePresentationDesignReadiness(contract)
+          if ('contract' in call.input) {
+            if (!['draft', 'ready'].includes(contract.status))
+              return failure(
+                call.name,
+                boundedJson({
+                  error: 'design_contract_invalid_status',
+                  allowedStatuses: ['draft', 'ready'],
+                  ...reviewRecovery(),
+                }),
+              )
+            if (contract.status === 'ready' && !readiness.ready)
+              return failure(
+                call.name,
+                `design_contract_not_ready: ${formatPresentationDesignReadinessFailure(contract, readiness.issues)}`,
+              )
+          }
+          const unchanged =
+            'contract' in call.input &&
+            activeDesignContractIsModern &&
+            activeDesignContract &&
+            activeDesignContract.status !== 'draft' &&
+            contract.status === 'ready' &&
+            JSON.stringify({ ...contract, status: activeDesignContract.status }) ===
+              JSON.stringify(activeDesignContract)
+          if (unchanged) {
+            contract = activeDesignContract!
+          } else {
+            activeDesignContract = contract
+            activeDesignContractIsModern = 'contract' in call.input
+            builtDesignSlides.clear()
+            appliedUnverifiedDesignSlides.clear()
+            pendingDesignReviews.clear()
+            repairRequiredDesignReviews.clear()
+            failedScreenshotSlides.clear()
+            proposalDesignSlides.clear()
+          }
+          return {
+            output: boundedJson({
+              status: contract.status,
+              revision: contract.revision,
+              designMd: activeDesignContractIsModern
+                ? visibleDesignDocument(contract)
+                : renderPresentationDesignContract(contract),
+              coreHook: contract.narrative.coreHook,
+              prototypePages: contract.prototypePages.map((number) => number - 1),
+              ...(activeDesignContractIsModern
+                ? {}
+                : {
+                    pages: contract.slides.map((slide) => ({
+                      page: slide.number,
+                      title: slide.title,
+                      brief: slide.claim,
+                      layout: slide.layoutFamily,
+                      purpose: slide.role,
+                      visual: slide.visualRoute,
+                      evidence: slide.evidence,
+                      acceptance: slide.acceptance.map((rule) => rule.criterion),
+                      density: slide.density,
+                    })),
+                  }),
+            }),
+            mutated: false,
+            summary: `Planned ${contract.slides.length} slides`,
+          }
+        }
+        if (presentation?.shouldSkip(call))
+          return {
+            output: JSON.stringify({ status: 'unchanged' }),
+            mutated: false,
+            summary: 'PowerPoint state already matched',
+          }
+        if (activeDesignContractIsModern && call.name === 'execute_office_js') {
+          const input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
+          const program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
+          if (program.operations.some((operation) => operation.op === 'duplicate_slide'))
+            return failure(
+              call.name,
+              JSON.stringify({
+                error: 'invalid_tool_input',
+                instruction:
+                  'Use the dedicated duplicate_slide tool so inserted pages follow the design contract.',
+              }),
+            )
+        }
+        let scaffolding = false
+        if (mutationTools.has(call.name)) {
+          const indexes = mutationSlideIndexes(call)
+          const inputIndexes =
+            call.name === 'duplicate_slide' ? [Number(call.input.slide_index)] : indexes
+          if (
+            knownSlideCount > 0 &&
+            inputIndexes.some((index) => index < 0 || index >= knownSlideCount)
+          )
+            return failure(call.name, 'invalid_tool_input')
+          const productionError = designProductionError(indexes, call.name === 'duplicate_slide')
+          const contract = activeDesignContract
+          // Append only the unbuilt placeholders needed to reach a later prototype.
+          scaffolding =
+            productionError === 'design_contract_prototype_required' &&
+            call.name === 'duplicate_slide' &&
+            contract !== undefined &&
+            ['ready', 'producing'].includes(contract.status) &&
+            knownSlideCount > 0 &&
+            call.input.slide_index === knownSlideCount - 1 &&
+            indexes[0]! < Math.max(...contract.prototypePages) - 1
+          if (productionError && !scaffolding)
+            return failure(
+              call.name,
+              productionError === 'design_contract_review_required'
+                ? boundedJson({ error: productionError, ...reviewRecovery() })
+                : productionError,
+            )
+          if (!activeDesignContractIsModern) {
+            mutationRevision++
+            for (const index of indexes) dirtySlideIndexes.add(index)
+          }
+          if (!indexes.length && ['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
+            unknownMutationPages = true
+        }
         if (call.name === 'edit_slide_master_xml' && !masterXmlEditingSupported)
           return failure(call.name, 'office_api_unsupported')
         if (
@@ -2022,6 +2779,8 @@ export function createPowerPointSkill(options: {
           return failure(call.name, 'office_api_unsupported')
         if (call.name === 'screenshot_slide') {
           const input = slideInput(call.input)
+          const capturedMutation = mutationRevision
+          const capturedContract = activeDesignContract
           let result: Awaited<ReturnType<PowerPointAdapter['screenshotSlide']>> & {
             renderer?: 'libreoffice'
           }
@@ -2092,23 +2851,147 @@ export function createPowerPointSkill(options: {
             !validPng(result.base64)
           )
             throw new Error('office_read_failed')
+          const sourceImage = { mime: result.mime, base64: result.base64 }
+          const modelImage = options.prepareScreenshot
+            ? await options.prepareScreenshot(sourceImage, signal)
+            : sourceImage
+          assertNotCancelled(signal)
+          if (capturedMutation !== mutationRevision || capturedContract !== activeDesignContract)
+            throw new Error('office_screenshot_unavailable')
+          const output = boundedJson({
+            slideId: result.slideId,
+            slideIndex: input.slide_index,
+            ...(result.renderer ? { renderer: result.renderer } : {}),
+            mime: modelImage.mime,
+            bytes: base64Bytes(modelImage.base64),
+            fingerprint: fingerprint(modelImage.base64),
+            visualAvailableToModel: true,
+            ...(activeDesignContractIsModern && activeDesignContract
+              ? {
+                  designRevision: activeDesignContract.revision,
+                  designStatus: activeDesignContract.status,
+                  acceptanceIds:
+                    activeDesignContract.slides[input.slide_index]?.acceptance.map(
+                      (rule) => rule.id,
+                    ) ?? [],
+                  designMd: visibleDesignDocument(activeDesignContract),
+                  nextTool: pendingDesignReviews.has(input.slide_index)
+                    ? 'review_slide_screenshot'
+                    : 'verify_slides',
+                }
+              : {}),
+          })
+          const modelContent = [{ type: 'image' as const, image: modelImage }]
+          // Production preparation must fit the actual Relay envelope before clearing the gate.
+          if (options.prepareScreenshot) encodeOfficeScreenshotResult(output, modelContent)
+          screenshotRevision = mutationRevision
+          dirtySlideIndexes.delete(input.slide_index)
+          failedScreenshotSlides.delete(input.slide_index)
           return {
-            output: boundedJson({
-              slideId: result.slideId,
-              slideIndex: input.slide_index,
-              ...(result.renderer ? { renderer: result.renderer } : {}),
-              mime: result.mime,
-              bytes: base64Bytes(result.base64),
-              fingerprint: fingerprint(result.base64),
-              visualAvailableToModel: true,
-            }),
-            modelContent: [{ type: 'image', image: { mime: result.mime, base64: result.base64 } }],
+            output,
+            modelContent,
             display: {
               kind: 'images',
               items: [{ url: `data:${result.mime};base64,${result.base64}` }],
             },
             mutated: false,
-            summary: 'Rendered PowerPoint slide',
+            summary:
+              activeDesignContractIsModern && activeDesignContract
+                ? `Rendered PowerPoint slide · DESIGN r${activeDesignContract.revision} ${activeDesignContract.status}`
+                : 'Rendered PowerPoint slide',
+          }
+        }
+        if (call.name === 'review_slide_screenshot') {
+          const slideIndex = Number(call.input.slide_index)
+          if (!Number.isSafeInteger(slideIndex) || slideIndex < 0)
+            return failure(call.name, 'invalid_tool_input')
+          const input = { slide_index: slideIndex }
+          if (!activeDesignContractIsModern || !activeDesignContract)
+            return failure(call.name, 'design_contract_required')
+          const expected =
+            activeDesignContract.slides[input.slide_index]?.acceptance.map((rule) => rule.id) ?? []
+          const supplied = Array.isArray(call.input.acceptance_ids)
+            ? call.input.acceptance_ids.map(String)
+            : []
+          if (
+            supplied.length !== expected.length ||
+            supplied.some((id, index) => id !== expected[index])
+          )
+            return failure(call.name, 'design_contract_acceptance_mismatch')
+          const alreadyReviewed =
+            !pendingDesignReviews.has(input.slide_index) &&
+            builtDesignSlides.has(input.slide_index) &&
+            !dirtySlideIndexes.has(input.slide_index)
+          if (alreadyReviewed && call.input.passed === true)
+            return {
+              output: boundedJson({
+                status: 'already_reviewed',
+                slide: input.slide_index + 1,
+                revision: activeDesignContract.revision,
+              }),
+              mutated: false,
+              summary: `PowerPoint slide already reviewed · DESIGN r${activeDesignContract.revision}`,
+            }
+          if (!pendingDesignReviews.has(input.slide_index) && !alreadyReviewed)
+            return failure(call.name, 'design_contract_review_not_pending')
+          if (dirtySlideIndexes.has(input.slide_index))
+            return failure(call.name, 'design_contract_screenshot_required')
+          if (call.input.passed !== true) {
+            const issues = Array.isArray(call.input.issues)
+              ? call.input.issues.map(String)
+              : ['Repair and re-screenshot this slide']
+            pendingDesignReviews.add(input.slide_index)
+            repairRequiredDesignReviews.add(input.slide_index)
+            appliedUnverifiedDesignSlides.delete(input.slide_index)
+            if (activeDesignContract.status === 'verified')
+              activeDesignContract = { ...activeDesignContract, status: 'producing' }
+            return {
+              output: boundedJson({
+                status: 'needs_repair',
+                slide: input.slide_index + 1,
+                revision: activeDesignContract.revision,
+                acceptanceIds: expected,
+                issues,
+                nextTool: 'list_slide_shapes',
+                instruction:
+                  'Repair the reported visual issues, then take a new screenshot before reviewing this slide again.',
+              }),
+              mutated: false,
+              summary: `PowerPoint slide needs repair · DESIGN r${activeDesignContract.revision}`,
+            }
+          }
+          if (repairRequiredDesignReviews.has(input.slide_index))
+            return {
+              output: boundedJson({
+                status: 'repair_required',
+                slide: input.slide_index + 1,
+                revision: activeDesignContract.revision,
+                acceptanceIds: expected,
+                nextTool: 'list_slide_shapes',
+                instruction:
+                  'Apply a repair for the previously reported issues, then take a new screenshot before reviewing this slide again.',
+              }),
+              mutated: false,
+              summary: `PowerPoint slide still needs repair · DESIGN r${activeDesignContract.revision}`,
+            }
+          pendingDesignReviews.delete(input.slide_index)
+          if (appliedUnverifiedDesignSlides.delete(input.slide_index)) {
+            builtDesignSlides.add(input.slide_index)
+            if (activeDesignContract.status === 'ready')
+              activeDesignContract = transitionPresentationDesignContract(
+                activeDesignContract,
+                'producing',
+              )
+          }
+          return {
+            output: boundedJson({
+              status: 'passed',
+              slide: input.slide_index + 1,
+              revision: activeDesignContract.revision,
+              acceptanceIds: expected,
+            }),
+            mutated: false,
+            summary: `Reviewed PowerPoint slide · DESIGN r${activeDesignContract.revision}`,
           }
         }
         if (call.name === 'list_slide_shapes') {
@@ -2121,10 +3004,24 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'read_slide_text') {
           const input = shapeInput(call.input)
+          const text = await options.adapter.readSlideText(
+            input.slide_index,
+            input.shape_id,
+            signal,
+          )
+          let textStyle
+          try {
+            textStyle = await options.adapter.readShapeTextStyle?.(
+              input.slide_index,
+              input.shape_id,
+              signal,
+            )
+          } catch (error) {
+            if (signal?.aborted) throw error
+            // Mixed/unsupported font properties must not make readable text unavailable.
+          }
           return {
-            output: boundedJson(
-              await options.adapter.readSlideText(input.slide_index, input.shape_id, signal),
-            ),
+            output: boundedJson({ ...text, ...(textStyle ? { textStyle } : {}) }),
             mutated: false,
             summary: 'Read PowerPoint text',
           }
@@ -2146,10 +3043,139 @@ export function createPowerPointSkill(options: {
               summary: 'Verified PowerPoint slide',
             }
           }
+          const verified = deck
+          const designClean =
+            !verified.truncated &&
+            verified.slides.every(
+              (slide) =>
+                !slide.shapesTruncated &&
+                !slide.overlapsTruncated &&
+                slide.overflows.length === 0 &&
+                slide.overlaps.length === 0,
+            )
+          const designComplete =
+            !activeDesignContractIsModern ||
+            (activeDesignContract !== undefined &&
+              builtDesignSlides.size === activeDesignContract.slides.length &&
+              pendingDesignReviews.size === 0)
+          if (activeDesignContractIsModern && (!designClean || !designComplete))
+            return failure(
+              call.name,
+              boundedJson({
+                error: !designComplete
+                  ? 'design_contract_production_incomplete'
+                  : 'design_contract_verification_failed',
+                ...reviewRecovery(),
+                ...(!designClean
+                  ? {
+                      nextTool: 'list_slide_shapes',
+                      instruction:
+                        'Repair the reported slide/shape geometry, then screenshot and review each changed page again. Use real slide backgrounds instead of overlapping background rectangles. Do not repeat verification without fixing the reported defects.',
+                    }
+                  : {}),
+                // Omit unrelated shape inventories; preserve bounded, actionable failures.
+                verification: {
+                  slideWidth: verified.slideWidth,
+                  slideHeight: verified.slideHeight,
+                  truncated: verified.truncated,
+                  slides: verified.slides.map(({ shapes: _shapes, ...slide }) => slide),
+                },
+                unbuiltSlideIndexes: activeDesignContract?.slides.flatMap((_, index) =>
+                  builtDesignSlides.has(index) ? [] : [index],
+                ),
+              }),
+            )
+          if (
+            dirtySlideIndexes.size === 0 &&
+            screenshotRevision === mutationRevision &&
+            designClean &&
+            designComplete
+          ) {
+            verificationRevision = mutationRevision
+            if (activeDesignContractIsModern && activeDesignContract?.status === 'producing')
+              activeDesignContract = transitionPresentationDesignContract(
+                activeDesignContract,
+                'verified',
+              )
+          }
           return {
-            output: boundedJson(deck),
+            output: boundedJson(
+              activeDesignContractIsModern && activeDesignContract?.status === 'verified'
+                ? {
+                    verification: verified,
+                    status: activeDesignContract.status,
+                    revision: activeDesignContract.revision,
+                    designMd: visibleDesignDocument(activeDesignContract),
+                  }
+                : verified,
+            ),
             mutated: false,
             summary: 'Verified PowerPoint slides',
+          }
+        }
+        if (call.name === 'set_slide_background') {
+          const input = slideBackgroundInput(call.input)
+          if (!options.adapter.readSlideBackground || !options.adapter.setSlideBackground)
+            return failure(call.name, 'office_api_unsupported')
+          const before = await options.adapter.readSlideBackground(input.slide_index, signal)
+          if (
+            before.type.toLowerCase() !== 'solid' ||
+            !before.backgroundColor ||
+            before.transparency === undefined
+          )
+            return failure(call.name, 'office_api_unsupported')
+          const color = input.color.toUpperCase()
+          const transparency = input.transparency ?? 0
+          const proposal = options.proposals.propose({
+            powerPointMutation: { indexes: mutationSlideIndexes(call), scaffold: scaffolding },
+            operation: call.name,
+            toolName: call.name,
+            title: input.explanation || 'Set slide background',
+            preview: { slideIndex: input.slide_index, color, transparency },
+            impact: {
+              host: 'powerpoint',
+              targets: [`${before.slideId}/background`],
+              count: 1,
+            },
+            verificationBinding: canonicalPowerPointVerificationBinding(call, [
+              `${before.slideId}/background`,
+            ]),
+            fingerprint: fingerprint(JSON.stringify(before)),
+            before,
+            after: { slideId: before.slideId, type: 'Solid', backgroundColor: color, transparency },
+            validate: async (s) =>
+              fingerprint(
+                JSON.stringify(await options.adapter.readSlideBackground!(input.slide_index, s)),
+              ) === fingerprint(JSON.stringify(before)),
+            execute: async (s) =>
+              options.adapter.setSlideBackground!(input.slide_index, color, transparency, s),
+            verify: async (s) => {
+              const current = await options.adapter.readSlideBackground!(input.slide_index, s)
+              if (
+                current.slideId !== before.slideId ||
+                current.backgroundColor?.toUpperCase() !== color ||
+                current.transparency !== transparency
+              ) {
+                await options.adapter.setSlideBackground!(
+                  input.slide_index,
+                  before.backgroundColor!,
+                  before.transparency!,
+                )
+                const restored = await options.adapter.readSlideBackground!(input.slide_index)
+                if (
+                  restored.backgroundColor?.toUpperCase() !==
+                    before.backgroundColor!.toUpperCase() ||
+                  restored.transparency !== before.transparency
+                )
+                  throw new Error('office_recovery_failed')
+                throw new Error('office_verify_failed')
+              }
+            },
+          })
+          return {
+            output: boundedJson(proposal),
+            mutated: false,
+            summary: 'Proposed PowerPoint slide background',
           }
         }
         if (call.name === 'inspect_slide_masters') {
@@ -2164,19 +3190,43 @@ export function createPowerPointSkill(options: {
           const input = textEditInput(call.input)
           if (!options.durableTextEdit || options.durableTextEditAvailable?.() === false)
             throw new Error('presentation_existing_persistence_unavailable')
-          return await options.durableTextEdit(input, signal)
+          const result = await options.durableTextEdit(input, signal)
+          if (!result.isError) {
+            try {
+              await trackDurableProposal(
+                JSON.parse(result.output),
+                [input.slide_index],
+                scaffolding,
+                false,
+                call,
+              )
+            } catch {}
+          }
+          return result
         }
         if (call.name === 'duplicate_slide') {
           const input = slideInput(call.input)
           if (!options.durableDuplicate)
             throw new Error('presentation_existing_persistence_unavailable')
+          const scaffoldContract = scaffolding ? activeDesignContract : undefined
           return {
             output: boundedJson(
-              await options.durableDuplicate(
-                input.slide_index,
-                input.explanation,
-                signal,
-                call.name,
+              await trackDurableProposal(
+                await options.durableDuplicate(
+                  input.slide_index,
+                  input.explanation,
+                  signal,
+                  call.name,
+                  scaffolding
+                    ? async (s) =>
+                        activeDesignContract === scaffoldContract &&
+                        (await options.adapter.getPresentationState(s)).slideCount ===
+                          input.slide_index + 1
+                    : undefined,
+                ),
+                [input.slide_index + 1],
+                scaffolding,
+                true,
               ),
             ),
             mutated: false,
@@ -2251,7 +3301,22 @@ export function createPowerPointSkill(options: {
             program.operations.some((operation) => operation.op === 'duplicate_slide') &&
             program.operations.length !== 1
           )
-            throw new Error('invalid_tool_input')
+            throw invalidToolInput('program.operations')
+          program.operations = program.operations.reduce<PowerPointDeclarativeOperation[]>(
+            (operations, operation) => {
+              const prior = operations.at(-1)
+              if (
+                operation.op === 'set_shape_text_style' &&
+                prior?.op === 'set_shape_text_style' &&
+                operation.slide_index === prior.slide_index &&
+                operation.shape_id === prior.shape_id
+              )
+                operations[operations.length - 1] = { ...prior, ...operation }
+              else operations.push(operation)
+              return operations
+            },
+            [],
+          )
           const shapeTargets = new Map<string, PowerPointDeclarativeOperation[]>()
           for (const operation of program.operations) {
             if (!('shape_id' in operation)) continue
@@ -2304,6 +3369,13 @@ export function createPowerPointSkill(options: {
               signal,
               call.name as 'add_slide_ir_objects' | 'execute_office_js',
             )
+            await trackDurableProposal(
+              proposed,
+              mutationSlideIndexes(call),
+              scaffolding,
+              false,
+              call,
+            )
             return {
               output: boundedJson(proposed),
               mutated: false,
@@ -2311,6 +3383,13 @@ export function createPowerPointSkill(options: {
             }
           }
           if (!program.operations.some((operation) => operation.op === 'duplicate_slide')) {
+            for (const operation of program.operations) {
+              if (!('shape_id' in operation)) continue
+              const inventory = await options.adapter.listSlideShapes(operation.slide_index, signal)
+              if (!inventory.shapes.some((shape) => shape.id === operation.shape_id))
+                throw new Error('invalid_tool_input')
+            }
+
             if (!options.durableModify)
               throw new Error('presentation_existing_persistence_unavailable')
             const proposed = await options.durableModify(
@@ -2319,6 +3398,13 @@ export function createPowerPointSkill(options: {
               ) as import('./presentation-existing-batch.js').NativeModifyOperation[],
               input.explanation,
               signal,
+            )
+            await trackDurableProposal(
+              proposed,
+              mutationSlideIndexes(call),
+              scaffolding,
+              false,
+              call,
             )
             return {
               output: boundedJson(proposed),
@@ -2330,11 +3416,16 @@ export function createPowerPointSkill(options: {
             throw new Error('presentation_existing_persistence_unavailable')
           return {
             output: boundedJson(
-              await options.durableDuplicate(
-                program.operations[0]!.slide_index,
-                input.explanation,
-                signal,
-                'execute_office_js',
+              await trackDurableProposal(
+                await options.durableDuplicate(
+                  program.operations[0]!.slide_index,
+                  input.explanation,
+                  signal,
+                  'execute_office_js',
+                ),
+                [program.operations[0]!.slide_index + 1],
+                scaffolding,
+                true,
               ),
             ),
             mutated: false,
@@ -2465,7 +3556,32 @@ export function createPowerPointSkill(options: {
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {
         const code = errorCode(error, ['edit_slide_text', 'duplicate_slide'].includes(call.name))
-        return failure(call.name, code, code === 'invalid_tool_input' ? error : undefined)
+        if (
+          call.name === 'screenshot_slide' &&
+          ['office_read_failed', 'office_screenshot_unavailable'].includes(code)
+        ) {
+          const index = Number(call.input.slide_index)
+          failedScreenshotSlides.add(index)
+          dirtySlideIndexes.add(index)
+          if (builtDesignSlides.has(index) || pendingDesignReviews.has(index)) {
+            pendingDesignReviews.add(index)
+            if (activeDesignContract?.status === 'verified')
+              activeDesignContract = { ...activeDesignContract, status: 'producing' }
+          }
+          return failure(
+            call.name,
+            boundedJson({
+              error: 'office_read_failed',
+              reason: 'office_screenshot_unavailable',
+              ...reviewRecovery(),
+              slide_index: index,
+              repairAllowed: designProductionError([index], false) === undefined,
+              visualAvailableToModel: false,
+            }),
+            error,
+          )
+        }
+        return failure(call.name, code, error)
       }
     },
   }

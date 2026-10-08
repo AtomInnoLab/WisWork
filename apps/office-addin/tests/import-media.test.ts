@@ -5,8 +5,12 @@ import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createExcelImportMediaSkill } from '../src/skills/excel/excel-import-media.js'
 import { createPowerPointImportMediaSkill } from '../src/skills/powerpoint/powerpoint-import-media.js'
+import { BrowserPowerPointImportMediaAdapter } from '../src/skills/powerpoint/browser-powerpoint-import-media-adapter.js'
+import { preparePowerPointImage } from '../src/skills/powerpoint/powerpoint-image-fit.js'
 import {
   exportSafeCsv,
+  MAX_IMAGE_IMPORT_BYTES,
+  MAX_IMPORT_BYTES,
   readBoundedCsv,
   readBoundedImage,
 } from '../src/skills/shared/import-media.js'
@@ -60,8 +64,25 @@ const png = (width = 1, height = 1) => {
   return result
 }
 const call = (name: string, input: Record<string, unknown>) => ({ id: 'c1', name, input })
+let drawImage: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
+  drawImage = vi.fn()
+  ;(globalThis as Record<string, unknown>).document = {
+    createElement: () => {
+      const canvas = {
+        width: 0,
+        height: 0,
+        getContext: () => ({ drawImage }),
+        toBlob: (done: (blob: Blob) => void) => {
+          const output = new PNG({ width: canvas.width, height: canvas.height })
+          output.data.fill(0)
+          done(new Blob([new Uint8Array(PNG.sync.write(output)).buffer], { type: 'image/png' }))
+        },
+      }
+      return canvas
+    },
+  }
   ;(globalThis as Record<string, unknown>).createImageBitmap = vi.fn(async (blob: Blob) => {
     const bytes = new Uint8Array(await blob.arrayBuffer())
     const dimensions =
@@ -75,6 +96,7 @@ afterEach(() => {
   delete (globalThis as Record<string, unknown>).Excel
   delete (globalThis as Record<string, unknown>).PowerPoint
   delete (globalThis as Record<string, unknown>).createImageBitmap
+  delete (globalThis as Record<string, unknown>).document
 })
 
 describe('host capability advertisement', () => {
@@ -108,15 +130,64 @@ describe('host capability advertisement', () => {
     ;(globalThis as Record<string, any>).Office.context.requirements.isSetSupported = (
       name: string,
       version: string,
-    ) => name === 'PowerPointApi' && version === '1.8'
+    ) =>
+      (name === 'PowerPointApi' && version === '1.5') ||
+      (name === 'ImageCoercion' && version === '1.1')
+    ;(globalThis as Record<string, any>).Office.context.document = {
+      setSelectedDataAsync: vi.fn(),
+    }
     ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
     const powerpoint = createOfficeHostRuntime('powerpoint').skill.tools.map((item) => item.name)
     expect(powerpoint).not.toContain('insert-image')
     expect(powerpoint).not.toContain('csv-to-sheet')
   })
+
+  it('keeps unsupported native image insertion unavailable even after PC negotiates image-fetch', async () => {
+    ;(globalThis as Record<string, unknown>).Office = {
+      context: {
+        host: 'PowerPoint',
+        platform: 'Mac',
+        requirements: {
+          isSetSupported: (name: string, version: string) =>
+            (name === 'PowerPointApi' && version === '1.5') ||
+            (name === 'ImageCoercion' && version === '1.1'),
+        },
+        document: { setSelectedDataAsync: vi.fn() },
+      },
+    }
+    ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      fetchPowerPointImage: vi.fn(),
+      powerPointImageFetchAvailable: () => false,
+    })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
+    expect(runtime.skill.systemPrompt).not.toContain('When insert_web_image is available')
+    expect(
+      runtime.skill.executeTool(
+        call('insert_web_image', {
+          url: 'https://images.example/llm.png',
+          slide_index: 0,
+          left: 1,
+          top: 2,
+          width: 30,
+          height: 40,
+        }),
+      ),
+    ).toEqual(expect.objectContaining({ output: 'image_fetch_unavailable', isError: true }))
+    runtime.setPowerPointImageFetchAvailable?.(true)
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
+    runtime.setPowerPointImageFetchAvailable?.(false)
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
+    runtime.dispose()
+  })
 })
 
 describe('bounded CSV and image contracts', () => {
+  it('allows practical Office images without expanding the text import budget', () => {
+    expect(MAX_IMPORT_BYTES).toBe(2 * 1024 * 1024)
+    expect(MAX_IMAGE_IMPORT_BYTES).toBe(10 * 1024 * 1024)
+  })
+
   it('parses quoted CSV and rejects hostile dimensions and malformed quotes', () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/input.csv', 'a,"b,b"\r\n"c\nline",d')
@@ -327,6 +398,517 @@ describe('Excel import/export proposals', () => {
 })
 
 describe('PowerPoint image proposal', () => {
+  it('crops a portrait photo to a landscape rectangle without stretching', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', png(20, 40))
+    const image = await readBoundedImage(vfs, '/home/user/photo.png')
+    const prepared = await preparePowerPointImage(image, { width: 40, height: 20 }, 'cover')
+    expect(prepared).toMatchObject({ width: 20, height: 10 })
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 15, 20, 10, 0, 0, 20, 10)
+  })
+
+  it('cancels a pending image decoder and closes a late bitmap without preparing a write', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', png(40, 20))
+    const image = await readBoundedImage(vfs, '/home/user/photo.png')
+    const lateBitmap = { width: 40, height: 20, close: vi.fn() }
+    let finish: ((bitmap: typeof lateBitmap) => void) | undefined
+    ;(globalThis as Record<string, unknown>).createImageBitmap = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const controller = new AbortController()
+    const pending = preparePowerPointImage(
+      image,
+      { width: 20, height: 20 },
+      'cover',
+      controller.signal,
+    )
+    controller.abort()
+    await expect(pending).rejects.toThrow('cancelled')
+    finish?.(lateBitmap)
+    await vi.waitFor(() => expect(lateBitmap.close).toHaveBeenCalledOnce())
+    expect(drawImage).not.toHaveBeenCalled()
+  })
+
+  it('bounds a stalled Canvas encoder and rejects an over-budget result', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', png(40, 20))
+    const image = await readBoundedImage(vfs, '/home/user/photo.png')
+    const canvas = { width: 0, height: 0, getContext: () => ({ drawImage }), toBlob: vi.fn() }
+    ;(globalThis as Record<string, unknown>).document = { createElement: () => canvas }
+    vi.useFakeTimers()
+    try {
+      const pending = preparePowerPointImage(image, { width: 20, height: 20 }, 'cover')
+      const rejected = expect(pending).rejects.toThrow('image_fetch_unavailable')
+      await vi.advanceTimersByTimeAsync(10_000)
+      await rejected
+      expect(canvas.width).toBe(0)
+      canvas.toBlob.mock.calls[0]![0](new Blob([], { type: 'image/png' }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(canvas.width).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+    canvas.toBlob.mockImplementation((done) =>
+      done(new Blob([new Uint8Array(MAX_IMAGE_IMPORT_BYTES + 1)], { type: 'image/png' })),
+    )
+    await expect(preparePowerPointImage(image, { width: 20, height: 20 }, 'cover')).rejects.toThrow(
+      'image_limit',
+    )
+    expect(canvas.width).toBe(0)
+  })
+
+  it.each([
+    ['insert-image', undefined],
+    ['insert_web_image', undefined],
+    ['insert-image', 'contain'],
+    ['insert_web_image', 'contain'],
+  ] as const)('preserves image proportions for %s with fit %s', async (name, fit) => {
+    const original = png(40, 20)
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', original)
+    const adapter = {
+      snapshotSlide: vi.fn().mockResolvedValue({ slideId: 's1', fingerprint: 'fp' }),
+      insertImage: vi.fn().mockResolvedValue({ id: 'pic1' }),
+      verifyImage: vi.fn().mockResolvedValue(true),
+      removeImage: vi.fn(),
+      verifyImageAbsent: vi.fn().mockResolvedValue(true),
+    }
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals,
+      vfs,
+      fetchImage: vi.fn().mockResolvedValue(original),
+    })
+    const result = await skill.executeTool(
+      call(name, {
+        ...(name === 'insert-image'
+          ? { path: '/home/user/photo.png' }
+          : { url: 'https://images.example/photo.png' }),
+        slide_index: 0,
+        left: 10,
+        top: 20,
+        width: 20,
+        height: 20,
+        ...(fit ? { fit } : {}),
+      }),
+    )
+    expect(result.isError).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+    const [slideIndex, base64, geometry] = adapter.insertImage.mock.calls[0]!
+    const inserted = PNG.sync.read(Buffer.from(base64, 'base64'))
+    expect(slideIndex).toBe(0)
+    expect(geometry).toEqual({ left: 10, top: 20, width: 20, height: 20 })
+    expect(inserted.width).toBe(inserted.height)
+    expect(drawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      ...(fit === 'contain' ? [0, 0, 40, 20, 0, 10, 40, 20] : [10, 0, 20, 20, 0, 0, 20, 20]),
+    )
+  })
+
+  function imageReadbackFixture(widthAtRead: (read: number) => number) {
+    let reads = 0
+    const geometry = { left: 10, top: 20, width: 300, height: 180 }
+    const picture = {
+      id: 'picture-1',
+      type: 'Image',
+      ...geometry,
+      load: vi.fn((properties: string) => {
+        if (properties.includes('width')) picture.width = widthAtRead(++reads)
+      }),
+      delete: vi.fn(() => {
+        shapes.items = []
+      }),
+    }
+    const shapes = {
+      items: [] as (typeof picture)[],
+      load: vi.fn(),
+      getItem: vi.fn(() => picture),
+    }
+    const slide = { id: 'slide-1', shapes, load: vi.fn() }
+    const context = {
+      presentation: {
+        slides: { getItemAt: vi.fn(() => slide) },
+        setSelectedSlides: vi.fn(),
+      },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    const setSelectedDataAsync = vi.fn(
+      (_data: string, _options: unknown, callback: (result: unknown) => void) => {
+        shapes.items = [picture]
+        callback({ status: 'succeeded' })
+      },
+    )
+    Object.assign(globalThis, {
+      Office: {
+        CoercionType: { Image: 'image' },
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          document: { setSelectedDataAsync },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+    const adapter = new BrowserPowerPointImportMediaAdapter({
+      snapshotSlide: vi.fn().mockResolvedValue({ slideId: 'slide-1', fingerprint: 'stable' }),
+    })
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/image.png', png(10, 10))
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointImportMediaSkill({ adapter, proposals, vfs })
+    return {
+      geometry,
+      adapter,
+      proposals,
+      skill,
+      picture,
+      shapes,
+      setSelectedDataAsync,
+      reads: () => reads,
+    }
+  }
+
+  it('waits for image geometry to converge without inserting the image again', async () => {
+    const fixture = imageReadbackFixture((read) => (read === 1 ? 0 : 300))
+    await fixture.skill.executeTool(
+      call('insert-image', {
+        path: '/home/user/image.png',
+        slide_index: 0,
+        ...fixture.geometry,
+      }),
+    )
+    await expect(
+      fixture.proposals.confirm(fixture.proposals.pending()!.id),
+    ).resolves.toBeUndefined()
+    expect(fixture.reads()).toBe(2)
+    expect(fixture.setSelectedDataAsync).toHaveBeenCalledOnce()
+    expect(fixture.picture.delete).not.toHaveBeenCalled()
+    expect(fixture.shapes.items).toHaveLength(1)
+  })
+
+  it('keeps a permanent geometry mismatch bounded and recovers the inserted image', async () => {
+    const fixture = imageReadbackFixture(() => 0)
+    await fixture.skill.executeTool(
+      call('insert-image', {
+        path: '/home/user/image.png',
+        slide_index: 0,
+        ...fixture.geometry,
+      }),
+    )
+    await expect(fixture.proposals.confirm(fixture.proposals.pending()!.id)).rejects.toThrow(
+      'office_verify_failed',
+    )
+    expect(fixture.reads()).toBe(3)
+    expect(fixture.setSelectedDataAsync).toHaveBeenCalledOnce()
+    expect(fixture.picture.delete).toHaveBeenCalledOnce()
+    expect(fixture.shapes.items).toHaveLength(0)
+  })
+
+  it('stops image readback on abort without retrying or replaying insertion', async () => {
+    const fixture = imageReadbackFixture(() => {
+      setTimeout(() => fixture.proposals.newTurn(), 0)
+      return 0
+    })
+    await fixture.skill.executeTool(
+      call('insert-image', {
+        path: '/home/user/image.png',
+        slide_index: 0,
+        ...fixture.geometry,
+      }),
+    )
+    await expect(fixture.proposals.confirm(fixture.proposals.pending()!.id)).rejects.toThrow(
+      'cancelled',
+    )
+    expect(fixture.reads()).toBe(1)
+    expect(fixture.setSelectedDataAsync).toHaveBeenCalledOnce()
+    expect(fixture.picture.delete).toHaveBeenCalledOnce()
+    expect(fixture.shapes.items).toHaveLength(0)
+  })
+
+  it('inserts pictures through the cross-platform ImageCoercion API', async () => {
+    const created = {
+      id: 'picture-1',
+      type: 'Image',
+      left: 10,
+      top: 20,
+      width: 300,
+      height: 180,
+      fill: { type: 'PictureAndTexture', load: vi.fn() },
+      load: vi.fn(),
+      delete: vi.fn(),
+    }
+    const shapes = {
+      items: [] as (typeof created)[],
+      load: vi.fn(),
+      getItem: vi.fn().mockReturnValue(created),
+    }
+    const slide = { id: 'slide-1', load: vi.fn(), shapes }
+    const setSelectedDataAsync = vi.fn(
+      (_base64: string, _options: Record<string, unknown>, callback: (result: unknown) => void) => {
+        shapes.items.push(created)
+        callback({ status: 'succeeded' })
+      },
+    )
+    const context = {
+      presentation: {
+        slides: { getItemAt: vi.fn().mockReturnValue(slide) },
+        setSelectedSlides: vi.fn(),
+      },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        CoercionType: { Image: 'image' },
+        context: {
+          host: 'PowerPoint',
+          requirements: {
+            isSetSupported: vi.fn(
+              (name: string, version: string) =>
+                (name === 'PowerPointApi' && version === '1.5') ||
+                (name === 'ImageCoercion' && version === '1.1'),
+            ),
+          },
+          document: { setSelectedDataAsync },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    const adapter = new BrowserPowerPointImportMediaAdapter({
+      snapshotSlide: vi.fn(),
+    })
+    await expect(
+      adapter.insertImage(0, 'cG5n', { left: 10, top: 20, width: 300, height: 180 }),
+    ).resolves.toEqual({ id: 'picture-1' })
+    expect(context.presentation.setSelectedSlides).toHaveBeenCalledWith(['slide-1'])
+    expect(setSelectedDataAsync).toHaveBeenCalledWith(
+      'cG5n',
+      {
+        coercionType: 'image',
+        imageLeft: 10,
+        imageTop: 20,
+        imageWidth: 300,
+        imageHeight: 180,
+      },
+      expect.any(Function),
+    )
+    expect(created).toMatchObject({ left: 10, top: 20, width: 300, height: 180 })
+  })
+
+  it('waits for PowerPoint for Mac to expose a successfully coerced image shape', async () => {
+    const created = {
+      id: 'picture-delayed',
+      type: 'Image',
+      left: 10,
+      top: 20,
+      width: 300,
+      height: 180,
+      load: vi.fn(),
+    }
+    const shapes = { items: [] as (typeof created)[], load: vi.fn() }
+    const slide = { id: 'slide-1', load: vi.fn(), shapes }
+    let inserted = false
+    let postInsertSyncs = 0
+    const context = {
+      presentation: {
+        slides: { getItemAt: vi.fn().mockReturnValue(slide) },
+        setSelectedSlides: vi.fn(),
+      },
+      sync: vi.fn(async () => {
+        if (inserted && ++postInsertSyncs === 3) shapes.items.push(created)
+      }),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        CoercionType: { Image: 'image' },
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          document: {
+            setSelectedDataAsync: vi.fn(
+              (_data: string, _options: unknown, callback: (result: unknown) => void) => {
+                inserted = true
+                callback({ status: 'succeeded' })
+              },
+            ),
+          },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    const adapter = new BrowserPowerPointImportMediaAdapter({ snapshotSlide: vi.fn() })
+    await expect(
+      adapter.insertImage(0, 'cG5n', { left: 10, top: 20, width: 300, height: 180 }),
+    ).resolves.toEqual({ id: 'picture-delayed' })
+  })
+
+  it('verifies the native image shape returned by ImageCoercion without reading fill state', async () => {
+    const shape = {
+      id: 'picture-1',
+      type: 'Image',
+      left: 10,
+      top: 20,
+      width: 299.999,
+      height: 180.001,
+      load: vi.fn(),
+    }
+    const slide = {
+      id: 'slide-1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn().mockReturnValue(shape) },
+    }
+    const context = {
+      presentation: { slides: { getItemAt: vi.fn().mockReturnValue(slide) } },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          document: { setSelectedDataAsync: vi.fn() },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    const adapter = new BrowserPowerPointImportMediaAdapter({ snapshotSlide: vi.fn() })
+    await expect(
+      adapter.verifyImage(0, 'picture-1', { left: 10, top: 20, width: 300, height: 180 }),
+    ).resolves.toBe(true)
+  })
+
+  it('fetches an image-search URL through the PC relay before inserting it', async () => {
+    const vfs = new InMemoryVfs()
+    const adapter = {
+      snapshotSlide: vi.fn().mockResolvedValue({ slideId: 's1', fingerprint: 'fp' }),
+      insertImage: vi.fn().mockResolvedValue({ id: 'pic1' }),
+      verifyImage: vi.fn().mockResolvedValue(true),
+      removeImage: vi.fn().mockResolvedValue(undefined),
+      verifyImageAbsent: vi.fn().mockResolvedValue(true),
+    }
+    const fetchImage = vi.fn().mockResolvedValue(png(10, 10))
+    const proposals = createStructuredProposalController()
+    const audit = vi.fn()
+    proposals.subscribeAudit?.(audit)
+    const validateMutation = vi.fn().mockReturnValueOnce('design_contract_prototype_required')
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals,
+      vfs,
+      fetchImage,
+      validateMutation,
+    })
+    expect(skill.tools.map((tool) => tool.name)).toContain('insert_web_image')
+    const blocked = await skill.executeTool(
+      call('insert_web_image', {
+        url: 'https://images.example/llm.png',
+        slide_index: 0,
+        left: 1,
+        top: 2,
+        width: 30,
+        height: 40,
+      }),
+    )
+    expect(blocked).toMatchObject({
+      isError: true,
+      mutated: false,
+      output: 'design_contract_prototype_required',
+    })
+    expect(fetchImage).not.toHaveBeenCalled()
+    expect(adapter.snapshotSlide).not.toHaveBeenCalled()
+    expect(proposals.pending()).toBeUndefined()
+    const result = await skill.executeTool(
+      call('insert_web_image', {
+        url: 'https://images.example/llm.png',
+        slide_index: 0,
+        left: 1,
+        top: 2,
+        width: 30,
+        height: 40,
+      }),
+    )
+    expect(result.isError).not.toBe(true)
+    expect(validateMutation).toHaveBeenCalledWith(0)
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'proposed',
+        powerPointMutation: { indexes: [0], scaffold: false },
+      }),
+    )
+    expect(fetchImage).toHaveBeenCalledWith('https://images.example/llm.png', undefined)
+    await proposals.confirm(proposals.pending()!.id)
+    expect(adapter.insertImage).toHaveBeenCalledOnce()
+  })
+
+  it('reports an unstable relay image fetch with a model-actionable error', async () => {
+    const adapter = {
+      snapshotSlide: vi.fn(),
+      insertImage: vi.fn(),
+      verifyImage: vi.fn(),
+      removeImage: vi.fn(),
+      verifyImageAbsent: vi.fn(),
+    }
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals: createStructuredProposalController(),
+      vfs: new InMemoryVfs(),
+      fetchImage: vi.fn().mockRejectedValue(new Error('relay_disconnected')),
+    })
+    await expect(
+      skill.executeTool(
+        call('insert_web_image', {
+          url: 'https://images.example/blocked.png',
+          slide_index: 0,
+          left: 1,
+          top: 2,
+          width: 30,
+          height: 40,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'image_fetch_unavailable', isError: true })
+    expect(adapter.snapshotSlide).not.toHaveBeenCalled()
+  })
+
+  it('rejects model-supplied image bytes and keeps them out of the public tool schema', async () => {
+    const adapter = {
+      snapshotSlide: vi.fn(),
+      insertImage: vi.fn(),
+      verifyImage: vi.fn(),
+      removeImage: vi.fn(),
+      verifyImageAbsent: vi.fn(),
+    }
+    const fetchImage = vi.fn()
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals: createStructuredProposalController(),
+      vfs: new InMemoryVfs(),
+      fetchImage,
+    })
+    expect(JSON.stringify(skill.tools)).not.toContain('_wiswork_image_base64')
+    await expect(
+      skill.executeTool(
+        call('insert_web_image', {
+          url: 'https://images.example/approved.png',
+          slide_index: 0,
+          left: 1,
+          top: 2,
+          width: 30,
+          height: 40,
+          _wiswork_image_base64: Buffer.from(png()).toString('base64'),
+        }),
+      ),
+    ).resolves.toMatchObject({ isError: true, output: 'invalid_tool_input' })
+    expect(fetchImage).not.toHaveBeenCalled()
+    expect(adapter.snapshotSlide).not.toHaveBeenCalled()
+  })
+
   it('revalidates the slide, inserts once, and semantically verifies the created shape', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/image.png', png(10, 10))

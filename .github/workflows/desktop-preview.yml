@@ -1,0 +1,94 @@
+name: Desktop Preview (unsigned internal)
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check preview isolation and component policy
+        run: |
+          node --test tools/release/preview.test.mjs
+          npm run test:codex-release
+
+      - name: Build application and notices
+        run: |
+          npm run notices
+          npm run build:all
+
+      - name: Fetch verified Tectonic
+        run: node tools/fetch-tectonic.mjs --platform darwin-arm64 --output "$GITHUB_WORKSPACE/apps/latex/native/tectonic-ci"
+
+      - name: Package isolated unsigned app
+        working-directory: apps/shell
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          WISWORK_UNSIGNED_MAC_BUILD: '1'
+          WISWORK_PREVIEW_PR: ${{ github.event.pull_request.number }}
+          WISWORK_PREVIEW_COMMIT: ${{ github.event.pull_request.head.sha }}
+          WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci
+        run: npx electron-builder --config electron-builder.preview.cjs --mac dir --arm64 --publish never
+
+      - name: Verify optional components stay outside the app
+        run: node tools/optional-runtime-policy.mjs --mode post-package --artifact-dir apps/shell/release-preview
+
+      # Archive with ditto so executable modes and app symlinks survive artifact storage.
+      - name: Archive preview and record provenance
+        env:
+          PREVIEW_PR: ${{ github.event.pull_request.number }}
+          PREVIEW_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          APP="apps/shell/release-preview/mac-arm64/WisWork Preview PR${PREVIEW_PR}.app"
+          test -d "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "apps/shell/release-preview/WisWork-Preview-PR${PREVIEW_PR}-${PREVIEW_COMMIT}.zip"
+          {
+            echo '### Internal unsigned Preview'
+            echo "PR: ${PREVIEW_PR}; commit: ${PREVIEW_COMMIT}"
+            echo 'Download the artifact below. It expires after 7 days; it is not a signed/notarized release.'
+            echo 'Independent profile; no production update feed. Use test documents only.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload preview
+        id: artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: WisWork-Preview-PR${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: apps/shell/release-preview/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Add download link
+        env:
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: echo "[Download Preview](${ARTIFACT_URL})" >> "$GITHUB_STEP_SUMMARY"

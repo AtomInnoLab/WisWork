@@ -21,7 +21,6 @@ export interface OfficeCapabilityFlags {
   skillPackages: boolean
   importMedia: boolean
 }
-
 function exactFlag(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined || value === '') return defaultValue
   if (value === '1') return true
@@ -78,6 +77,13 @@ export function presentationRolloutEnabled(
   return (hash >>> 0) % 100 < percent
 }
 
+export function officePairingResumeEnabled(env: BuildEnv): boolean {
+  const value = env.VITE_WISWORK_OFFICE_PAIRING_RESUME
+  if (value === undefined || value === '1') return true
+  if (value === '0') return false
+  throw new Error('invalid_office_pairing_resume')
+}
+
 export function officeBuildId(env: BuildEnv, fallback: string): string {
   const value = env.VITE_WISWORK_OFFICE_BUILD_ID || fallback
   if (!/^[A-Za-z0-9_.-]{3,96}$/.test(value)) throw new Error('invalid_office_build_id')
@@ -120,6 +126,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
     void officeRemoteDiagnosticsEnabled(env)
     void officeDiagnosticSamplePercent(env)
     void officePresentationRolloutPercent(env)
+    void officePairingResumeEnabled(env)
     void officeBuildId(env, 'development')
   } catch {
     return undefined

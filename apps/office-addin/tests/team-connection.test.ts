@@ -47,6 +47,7 @@ function fixture() {
     authenticatedFetch: vi.fn(),
     sendDiagnostic: vi.fn(),
     diagnosticSessionId: () => undefined,
+    forget: vi.fn(async () => undefined),
   }
   const loginDialog = vi.fn(async () => 'https://addin.example/callback?code=code&state=state'),
     onUnavailable = vi.fn()

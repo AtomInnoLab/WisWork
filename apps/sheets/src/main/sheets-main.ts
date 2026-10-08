@@ -52,7 +52,7 @@ import { ProjectStore } from '@wiswork/project-store'
 import { registerWisworkModelIpc, validateAiSearchArgs } from '@wiswork/ai-provider'
 import { csvToXlsxBuffer, decodeCsvBuffer } from '../gateway/csv-import'
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
-import { webSearch, imageSearch } from '@wiswork/ai-search'
+import { wisUsageWebSearch, imageSearch } from '@wiswork/ai-search'
 import { parseFileToText } from '@wiswork/file-parse'
 import type { CellEdit, SheetStructuralOps } from '../gateway/xlsx-gateway'
 import { readArchiveEntryText, saveWorkbookViaSidecar } from '../gateway/xlsx-package-io'
@@ -2148,13 +2148,16 @@ export function registerSheetsAiIpc(): void {
     return getElectronAuthRuntimeOrNull()?.client.logout()
   })
 
-  // Shared search tools (content + images): Serper with DuckDuckGo fallback
-  // (same source as slides/docs)
+  // Authenticated WisUsage Xiaosu content search; image search keeps its existing backend.
   ipcMain.handle('ai:web-search', async (event, query: unknown, maxResults?: unknown) => {
     sessionFor(event)
     try {
-      const input = validateAiSearchArgs(query, maxResults, 6)
-      return await webSearch(input.query, input.maxResults)
+      const input = validateAiSearchArgs(query, maxResults, 10)
+      const runtime = getElectronAuthRuntimeOrNull()
+      if (!runtime) throw new AuthError('auth_required')
+      return await wisUsageWebSearch(input.query, input.maxResults, {
+        fetchWithAuth: (request) => runtime.client.fetchWithAuth(request),
+      })
     } catch (err) {
       return { results: [], method: 'error', error: String(err) }
     }
