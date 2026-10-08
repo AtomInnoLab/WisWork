@@ -5,6 +5,8 @@ import {
   type AgentLoopOptions,
   type AgentMessage,
 } from '@wiswork/agent-core'
+import type { SessionNotification } from '@agentclientprotocol/sdk'
+import { acpNotification, acpToolFinished, acpToolStarted } from './acp-events'
 
 export type AgentHarnessStatus = 'idle' | 'running' | 'done' | 'cancelled' | 'error'
 
@@ -16,9 +18,12 @@ export interface AgentHarnessSnapshot {
 }
 
 export interface AgentHarness<_TSnapshot> {
+  readonly sessionId: string
   readonly snapshot: AgentHarnessSnapshot
   readonly messages: readonly AgentMessage[]
   subscribe(listener: () => void): () => void
+  /** Subscribe to ACP v1 `session/update` notifications for frontend presentation. */
+  subscribeAcp(listener: (notification: SessionNotification) => void): () => void
   run(instruction: string, images?: AgentImage[]): boolean
   stop(): void
   reset(): void
@@ -33,6 +38,8 @@ export function createAgentHarness<TSnapshot>(
   const loopOptions: AgentLoopOptions<TSnapshot> = { ...options }
   const loop = new AgentLoop(loopOptions)
   const listeners = new Set<() => void>()
+  const acpListeners = new Set<(notification: SessionNotification) => void>()
+  let sessionId = crypto.randomUUID()
   let currentSnapshot: AgentHarnessSnapshot = {
     status: 'idle',
     busy: false,
@@ -60,45 +67,80 @@ export function createAgentHarness<TSnapshot>(
     }
   }
 
+  const publishAcp = (update: SessionNotification['update']): void => {
+    const notification = acpNotification(sessionId, update)
+    for (const listener of [...acpListeners]) {
+      try {
+        listener(notification)
+      } catch {
+        // One client view must not interrupt the Agent lifecycle.
+      }
+    }
+  }
+
   const isCurrent = (generation: number): boolean =>
     !disposed && generation === currentSnapshot.generation
 
-  const eventsFor = (generation: number): AgentLoopEvents<TSnapshot> => ({
-    onText: (text) => {
-      if (!isCurrent(generation)) return
-      invoke(() => hostEvents?.onText?.(text))
-    },
-    onToolStart: (call) => {
-      if (!isCurrent(generation)) return
-      invoke(() => hostEvents?.onToolStart?.(call))
-    },
-    onToolExecuted: (event) => {
-      if (!isCurrent(generation)) return
-      invoke(() => hostEvents?.onToolExecuted?.(event))
-    },
-    onTurnEnd: () => {
-      if (!isCurrent(generation)) return
-      invoke(() => hostEvents?.onTurnEnd?.())
-    },
-    onDone: (result) => {
-      if (!isCurrent(generation)) return
-      invoke(() => hostEvents?.onDone?.(result))
-      if (!isCurrent(generation)) return
-      publish({
-        status: result.cancelled ? 'cancelled' : 'done',
-        busy: false,
-        generation,
-      })
-    },
-    onError: (error) => {
-      if (!isCurrent(generation)) return
-      invoke(() => hostEvents?.onError?.(error))
-      if (!isCurrent(generation)) return
-      publish({ status: 'error', busy: false, generation, error })
-    },
-  })
+  const eventsFor = (generation: number): AgentLoopEvents<TSnapshot> => {
+    let streamedText = ''
+    let messageId = crypto.randomUUID()
+    const finishMessage = () => {
+      streamedText = ''
+      messageId = crypto.randomUUID()
+    }
+    return {
+      onText: (text) => {
+        if (!isCurrent(generation)) return
+        const delta = text.startsWith(streamedText) ? text.slice(streamedText.length) : text
+        streamedText = text
+        if (delta) {
+          publishAcp({
+            sessionUpdate: 'agent_message_chunk',
+            messageId,
+            content: { type: 'text', text: delta },
+          })
+        }
+        invoke(() => hostEvents?.onText?.(text))
+      },
+      onToolStart: (call) => {
+        if (!isCurrent(generation)) return
+        finishMessage()
+        publishAcp(acpToolStarted(call))
+        invoke(() => hostEvents?.onToolStart?.(call))
+      },
+      onToolExecuted: (event) => {
+        if (!isCurrent(generation)) return
+        publishAcp(acpToolFinished(event.call, event.execution))
+        invoke(() => hostEvents?.onToolExecuted?.(event))
+      },
+      onTurnEnd: () => {
+        if (!isCurrent(generation)) return
+        finishMessage()
+        invoke(() => hostEvents?.onTurnEnd?.())
+      },
+      onDone: (result) => {
+        if (!isCurrent(generation)) return
+        invoke(() => hostEvents?.onDone?.(result))
+        if (!isCurrent(generation)) return
+        publish({
+          status: result.cancelled ? 'cancelled' : 'done',
+          busy: false,
+          generation,
+        })
+      },
+      onError: (error) => {
+        if (!isCurrent(generation)) return
+        invoke(() => hostEvents?.onError?.(error))
+        if (!isCurrent(generation)) return
+        publish({ status: 'error', busy: false, generation, error })
+      },
+    }
+  }
 
   return {
+    get sessionId() {
+      return sessionId
+    },
     get snapshot() {
       return currentSnapshot
     },
@@ -109,6 +151,11 @@ export function createAgentHarness<TSnapshot>(
       if (disposed) return () => undefined
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+    subscribeAcp(listener) {
+      if (disposed) return () => undefined
+      acpListeners.add(listener)
+      return () => acpListeners.delete(listener)
     },
     run(instruction, images) {
       if (disposed || launchPending || loop.busy || !instruction) return false
@@ -144,6 +191,7 @@ export function createAgentHarness<TSnapshot>(
       launchPending = false
       const generation = currentSnapshot.generation + 1
       loop.reset()
+      sessionId = crypto.randomUUID()
       publish({ status: 'idle', busy: false, generation })
     },
     restore(messages) {
@@ -163,6 +211,7 @@ export function createAgentHarness<TSnapshot>(
         generation: currentSnapshot.generation + 1,
       }
       listeners.clear()
+      acpListeners.clear()
     },
   }
 }
