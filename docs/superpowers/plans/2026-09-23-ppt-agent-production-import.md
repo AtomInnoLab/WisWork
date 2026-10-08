@@ -11,8 +11,8 @@
 ## 交付单元
 
 1. delivery与持久化（backend）：扩展CompiledPresentationArtifact可选pagePptxBase64:string[]，只有生产集合使用，pptxBase64为空。checkpoint v2新增pageIds:string[]，sourceSlideIds允许重复；v1保持原校验。新工具import_presentation_production/read_presentation_production_import_status复用现有循环；从数组取对应PPTX和真实sourceSlideId，完成映射使用稳定pageIds。digest绑定完整集合和元数据；回执key production/project/request。document imports严格识别v2与命名空间，兼容已有v1。文件presentation-delivery.ts、presentation-page-delivery.ts、presentation-document.ts及对应测试。测试重复源ID、多页resume、不确定不重写、命名空间隔离、改字节/顺序/业务ID拒绝、保存重建；先RED再GREEN，范围提交。
-2.准备（frontend）：presentation-production.ts与其测试，新增prepare_presentation_production_import(project_id,request_id)，先读严格status，全部compiled后顺序拉每页，复用现有响应校验；planRevision与业务pageId一致、累计原始字节<=10MiB；每await检查身份/epoch/abort，完成并remember后原子发布有界缓存，不触碰generation artifact。返回artifact(projectId?)，clear清缓存；失败不能发布半成品。准备重跑可恢复旧任务；工具不写宿主、不标QA。先RED再GREEN，范围提交。
-3.root：host-runtime注册/路由production import，与原整稿独立；importProgress卡展示最近显式准备的产物（旧生成操作切回旧成果），clear取消选中。真实PptxGenJS→PC→准备→宿主adapter测试，检查一份文件一次选页、恢复、ID映射及不会混同旧成果。阶段报告回填验收。
+   2.准备（frontend）：presentation-production.ts与其测试，新增prepare_presentation_production_import(project_id,request_id)，先读严格status，全部compiled后顺序拉每页，复用现有响应校验；planRevision与业务pageId一致、累计原始字节<=10MiB；每await检查身份/epoch/abort，完成并remember后原子发布有界缓存，不触碰generation artifact。返回artifact(projectId?)，clear清缓存；失败不能发布半成品。准备重跑可恢复旧任务；工具不写宿主、不标QA。先RED再GREEN，范围提交。
+   3.root：host-runtime注册/路由production import，与原整稿独立；importProgress卡展示最近显式准备的产物（旧生成操作切回旧成果），clear取消选中。真实PptxGenJS→PC→准备→宿主adapter测试，检查一份文件一次选页、恢复、ID映射及不会混同旧成果。阶段报告回填验收。
 
 ## 验证与发布
 

@@ -7,10 +7,7 @@ const input = path.join(
   root,
   'docs/product/wiswork-ppt-agent-solution-and-implementation-plan-2026-09-22.md',
 )
-const output = path.join(
-  root,
-  'output/pdf/wiswork-ppt-agent-solution-plan-2026-09-22.html',
-)
+const output = path.join(root, 'output/pdf/wiswork-ppt-agent-solution-plan-2026-09-22.html')
 const assetSource = path.join(root, 'docs/product/assets')
 const assetOutput = path.join(root, 'output/pdf/assets')
 

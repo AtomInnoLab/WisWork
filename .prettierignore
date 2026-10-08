@@ -16,3 +16,8 @@ scripts/drivers/driver.*.mjs
 
 # Vendored third-party sources stay byte-identical to upstream.
 packages/*/src/vendor/
+
+# Frozen benchmark data and upstream HTML snapshots are verified by SHA256SUMS.
+# Preserve source bytes (including upstream HTML syntax); format code and docs normally.
+docs/product/ppt-benchmark-materials/**/*.json
+docs/product/ppt-benchmark-materials/**/*.html

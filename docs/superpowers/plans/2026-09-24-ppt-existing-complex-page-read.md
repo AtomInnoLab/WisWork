@@ -9,6 +9,7 @@ Architecture: reuse the existing bounded PPTX ZIP loader and XML parser in the O
 Constraints: no new dependency; 8 MiB package ceiling and 256-entry ZIP ceiling; bounded XML and tool output; no external relationships or path traversal; model-visible content is untrusted data; `qaPassed: false` always.
 
 Files:
+
 - `apps/office-addin/src/skills/powerpoint/powerpoint-package.ts`: expose the existing bounded ZIP reader.
 - `apps/office-addin/src/skills/powerpoint/presentation-complex-page-package.ts`: parse bounded table cells and chart cache data.
 - `apps/office-addin/tests/presentation-complex-page-package.test.ts`: malformed, external relation, and bounded data checks.

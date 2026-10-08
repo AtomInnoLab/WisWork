@@ -19,18 +19,22 @@ export function presentationPreferenceCandidates(
   projectId: string,
 ): PresentationPreferenceCandidate[] {
   if (
-    !Array.isArray(entries) || entries.length > 64 ||
+    !Array.isArray(entries) ||
+    entries.length > 64 ||
     entries.some((entry) => !validatePresentationHistoryEntry(entry)) ||
     new Set(entries.map((entry) => entry.id)).size !== entries.length ||
     new Set(entries.map((entry) => entry.sequence)).size !== entries.length ||
     new TextEncoder().encode(JSON.stringify(entries)).byteLength > 1024 * 1024
-  ) throw new Error('presentation_change_history_invalid')
+  )
+    throw new Error('presentation_change_history_invalid')
   return entries
-    .filter((entry) =>
-      (entry.kind === 'text' || entry.kind === 'geometry') &&
-      entry.record.documentId === documentId &&
-      entry.record.projectId === projectId &&
-      entry.record.state === 'applied')
+    .filter(
+      (entry) =>
+        (entry.kind === 'text' || entry.kind === 'geometry') &&
+        entry.record.documentId === documentId &&
+        entry.record.projectId === projectId &&
+        entry.record.state === 'applied',
+    )
     .slice(-8)
     .map((entry) => {
       if (entry.kind !== 'text' && entry.kind !== 'geometry') throw new Error('unreachable')
@@ -39,8 +43,12 @@ export function presentationPreferenceCandidates(
         changeId: entry.record.changeId,
         kind: entry.kind,
         pageId: entry.record.pageId,
-        before: short(entry.kind === 'text' ? entry.record.before : JSON.stringify(entry.record.before)),
-        after: short(entry.kind === 'text' ? entry.record.after : JSON.stringify(entry.record.after)),
+        before: short(
+          entry.kind === 'text' ? entry.record.before : JSON.stringify(entry.record.before),
+        ),
+        after: short(
+          entry.kind === 'text' ? entry.record.after : JSON.stringify(entry.record.after),
+        ),
         status: 'candidate' as const,
       }
     })

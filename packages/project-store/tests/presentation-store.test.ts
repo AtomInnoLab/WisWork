@@ -117,8 +117,9 @@ describe('durable plans', () => {
     expect(() => store.savePlan('p', 'd', 1, { title: 'A' })).toThrow('revision_conflict')
     const first = store.savePlan('p', 'd', 0, { title: 'A' })
     expect(first.revision).toBe(1)
-    expect(first.revisions).toEqual([{ revision: 1, inputDigest: first.inputDigest,
-      createdAt: expect.any(String) }])
+    expect(first.revisions).toEqual([
+      { revision: 1, inputDigest: first.inputDigest, createdAt: expect.any(String) },
+    ])
     expect(new PresentationStore(root).plan('p', 'd')).toEqual(first)
     expect(store.savePlan('p', 'd', 0, { title: 'A' })).toEqual(first)
     expect(store.savePlan('p', 'd', 1, { title: 'A' })).toEqual(first)
@@ -161,8 +162,15 @@ describe('durable plans', () => {
     expect(saved.revisions?.[0]?.revision).toBe(3)
     expect(saved.revisions?.at(-1)?.revision).toBe(34)
     const path = join(directory(), 'plan.json')
-    writeFileSync(path, JSON.stringify({ ...saved, revisions: saved.revisions?.map((entry, index) =>
-      index === 0 ? { ...entry, revision: 2 } : entry) }))
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...saved,
+        revisions: saved.revisions?.map((entry, index) =>
+          index === 0 ? { ...entry, revision: 2 } : entry,
+        ),
+      }),
+    )
     expect(() => new PresentationStore(root).plan('p', 'd')).toThrow('invalid_state')
   })
   it('loads pre-history plans and registers the complete prior version on the next save', () => {
@@ -172,22 +180,40 @@ describe('durable plans', () => {
     const { revisions: _revisions, ...legacy } = first
     writeFileSync(path, JSON.stringify(legacy))
     expect(store.plan('p', 'd')?.revisions).toBeUndefined()
-    expect(store.savePlan('p', 'd', 1, { title: 'B' }).revisions?.map((entry) => entry.revision)).toEqual([1, 2])
+    expect(
+      store.savePlan('p', 'd', 1, { title: 'B' }).revisions?.map((entry) => entry.revision),
+    ).toEqual([1, 2])
     expect(store.planRevision('p', 'd', 1)?.plan).toEqual(first.plan)
   })
   it('records bounded plan section snapshots without copying source text into events', () => {
     const { store, directory } = planFixture()
-    const firstPlan = { sources: [{ id: 'source', excerpt: 'private source text' }],
-      claims: [{ id: 'claim' }], slides: [{ id: 'page' }], style: { accent: 'blue' } }
+    const firstPlan = {
+      sources: [{ id: 'source', excerpt: 'private source text' }],
+      claims: [{ id: 'claim' }],
+      slides: [{ id: 'page' }],
+      style: { accent: 'blue' },
+    }
     const first = store.savePlan('p', 'd', 0, firstPlan)
-    expect(first.revisions?.[0]?.snapshot).toMatchObject({ sourceCount: 1, claimCount: 1, slideCount: 1 })
+    expect(first.revisions?.[0]?.snapshot).toMatchObject({
+      sourceCount: 1,
+      claimCount: 1,
+      slideCount: 1,
+    })
     expect(JSON.stringify(first.revisions)).not.toContain('private source text')
-    const second = store.savePlan('p', 'd', 1, { ...firstPlan,
-      sources: [{ id: 'source', excerpt: 'updated source text' }] })
-    expect(second.revisions?.[1]?.snapshot?.sourcesDigest).not.toBe(first.revisions?.[0]?.snapshot?.sourcesDigest)
+    const second = store.savePlan('p', 'd', 1, {
+      ...firstPlan,
+      sources: [{ id: 'source', excerpt: 'updated source text' }],
+    })
+    expect(second.revisions?.[1]?.snapshot?.sourcesDigest).not.toBe(
+      first.revisions?.[0]?.snapshot?.sourcesDigest,
+    )
     expect(second.revisions?.[1]?.snapshot?.sourceCount).toBe(1)
-    expect(store.savePlan('p', 'd', 1, { ...firstPlan,
-      sources: [{ id: 'source', excerpt: 'updated source text' }] }).revisions).toEqual(second.revisions)
+    expect(
+      store.savePlan('p', 'd', 1, {
+        ...firstPlan,
+        sources: [{ id: 'source', excerpt: 'updated source text' }],
+      }).revisions,
+    ).toEqual(second.revisions)
     const path = join(directory(), 'plan.json')
     const corrupt = structuredClone(second)
     corrupt.revisions![1]!.snapshot!.sourceCount = 2
@@ -200,9 +226,16 @@ describe('durable plans', () => {
     const first = store.savePlan('p', 'd', 0, base)
     const branded = { ...base, brandKit: { id: 'brand', revision: 1, allowedColors: ['3366FF'] } }
     const second = store.savePlan('p', 'd', 1, branded)
-    expect(second.revisions?.[1]?.snapshot?.styleDigest).not.toBe(first.revisions?.[0]?.snapshot?.styleDigest)
-    const updated = store.savePlan('p', 'd', 2, { ...branded, brandKit: { ...branded.brandKit, revision: 2 } })
-    expect(updated.revisions?.[2]?.snapshot?.styleDigest).not.toBe(second.revisions?.[1]?.snapshot?.styleDigest)
+    expect(second.revisions?.[1]?.snapshot?.styleDigest).not.toBe(
+      first.revisions?.[0]?.snapshot?.styleDigest,
+    )
+    const updated = store.savePlan('p', 'd', 2, {
+      ...branded,
+      brandKit: { ...branded.brandKit, revision: 2 },
+    })
+    expect(updated.revisions?.[2]?.snapshot?.styleDigest).not.toBe(
+      second.revisions?.[1]?.snapshot?.styleDigest,
+    )
     expect(new PresentationStore(root).plan('p', 'd')?.revisions).toEqual(updated.revisions)
   })
   it('bounds and validates persisted JSON input', () => {

@@ -5,11 +5,11 @@
 ## Shared exact contract (B owns)
 
 新增 browser-safe packages/project-store/src/presentation-source-assessment.ts +subpath export。PresentationSourceAssessment = {
- scope:string(1..400),
- authority:{outcome:'appropriate_for_claim'|'insufficient_authority'|'uncertain',sourceTier:'primary'|'authoritative_secondary'|'secondary'|'unverified',reason:string(1..600)},
- timeliness:{outcome:'current_for_claim'|'historical_only'|'superseded'|'uncertain',referenceDate:YYYY-MM-DD,claimAsOf?:string(1..100),sourceAsOf?:string(1..100),reason:string(1..600)},
- jurisdiction?:{claimJurisdiction:string(1..400),outcome:'applicable'|'mismatch'|'uncertain',reason:string(1..600)},
- basis:{offset:integer0..1_000_000,text:string(1..600)}[] max4
+scope:string(1..400),
+authority:{outcome:'appropriate_for_claim'|'insufficient_authority'|'uncertain',sourceTier:'primary'|'authoritative_secondary'|'secondary'|'unverified',reason:string(1..600)},
+timeliness:{outcome:'current_for_claim'|'historical_only'|'superseded'|'uncertain',referenceDate:YYYY-MM-DD,claimAsOf?:string(1..100),sourceAsOf?:string(1..100),reason:string(1..600)},
+jurisdiction?:{claimJurisdiction:string(1..400),outcome:'applicable'|'mismatch'|'uncertain',reason:string(1..600)},
+basis:{offset:integer0..1_000_000,text:string(1..600)}[] max4
 }。
 
 exports PRESENTATION_SOURCE_ASSESSMENT_SCHEMA（普通JSON Schema兼容engineSchema与Agent inputSchema），parsePresentationSourceAssessment(value)，assertPresentationSourceAssessmentBasis(assessment,window:{offset:number,text:string})。严格keys/enums/date真实日历/UTF8总量<=16KiB/非空reason、重复basis拒绝；basis原文数据保留formfeed等原始code units，scope/reason/范围拒绝XML非法控制与孤立surrogate。basis absolute UTF16 offsets必须全在实际读窗口、text逐字相同。任一正向 authority appropriate/current timeliness/applicable jurisdiction要求至少1条basis；全uncertain可无basis以记录无可核验资料。literal存在只证明文字存在，不自动证明其内容正确或来源真实。
