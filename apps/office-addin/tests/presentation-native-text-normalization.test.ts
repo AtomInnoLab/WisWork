@@ -8,7 +8,6 @@ it.each(['\r', '\v', '\r\n', 'wrong text'])(
   async (separator) => {
     const expected = 'First\nSecond\nThird'
     let text = 'Hello'
-    let binding: Awaited<ReturnType<typeof durableCompatibility>>['binding']
     let changeId = ''
     const shapes = [
       { id: 'text-1', name: 'Title', type: 'TextBox', left: 10, top: 20, width: 200, height: 80 },
@@ -38,7 +37,7 @@ it.each(['\r', '\v', '\r\n', 'wrong text'])(
     } as unknown as PowerPointAdapter
     const proposals = createStructuredProposalController()
     const fixture = await durableCompatibility(adapter, proposals)
-    binding = fixture.binding
+    const binding = fixture.binding
     const result = await fixture.skill.executeTool({
       id: 'normalize',
       name: 'execute_office_js',
