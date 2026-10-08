@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="350" viewBox="0 0 1050 540">
+  <rect width="1050" height="540" fill="#f7f9fc"/>
+  <text x="45" y="45" font-family="Noto Sans CJK SC, sans-serif" font-size="26" font-weight="700" fill="#12243d">插件错误先恢复，只有真正需要判断时才打断用户</text>
+  <g font-family="Noto Sans CJK SC, sans-serif" text-anchor="middle">
+    <rect x="55" y="195" width="155" height="80" rx="14" fill="#fde9e6" stroke="#c94f45" stroke-width="2"/><text x="132" y="228" font-size="18" font-weight="700" fill="#8c302a">检测到异常</text><text x="132" y="254" font-size="14" fill="#7b4642">保留 Project/回执</text>
+    <polygon points="305,180 400,235 305,290 210,235" fill="#fff0e6" stroke="#d56b2d" stroke-width="2"/><text x="305" y="228" font-size="17" font-weight="700" fill="#8b431d">是否瞬时故障？</text><text x="305" y="250" font-size="13" fill="#7a5037">网络 / Provider / Relay</text>
+    <rect x="455" y="85" width="170" height="80" rx="14" fill="#e8f2f9" stroke="#2f80a8" stroke-width="2"/><text x="540" y="118" font-size="18" font-weight="700" fill="#1d5578">自动恢复</text><text x="540" y="144" font-size="14" fill="#46687d">重连·退避·换路</text>
+    <polygon points="540,205 635,260 540,315 445,260" fill="#fff0e6" stroke="#d56b2d" stroke-width="2"/><text x="540" y="253" font-size="17" font-weight="700" fill="#8b431d">写入是否未知？</text><text x="540" y="275" font-size="13" fill="#7a5037">超时但可能已成功</text>
+    <rect x="700" y="205" width="170" height="80" rx="14" fill="#e8f2f9" stroke="#2f80a8" stroke-width="2"/><text x="785" y="238" font-size="18" font-weight="700" fill="#1d5578">查询回执/回读</text><text x="785" y="264" font-size="14" fill="#46687d">禁止盲目重放</text>
+    <rect x="700" y="355" width="205" height="85" rx="14" fill="#dff1e6" stroke="#3d8e5b" stroke-width="2"/><text x="802" y="388" font-size="18" font-weight="700" fill="#205b39">从最后成功步骤继续</text><text x="802" y="415" font-size="14" fill="#35694b">UI 保持原进度</text>
+    <rect x="270" y="380" width="220" height="85" rx="14" fill="#fff6d9" stroke="#b68a19" stroke-width="2"/><text x="380" y="413" font-size="18" font-weight="700" fill="#765b12">需要用户判断</text><text x="380" y="440" font-size="14" fill="#6b5a29">范围冲突·高风险·权限不足</text>
+  </g>
+  <g fill="none" stroke="#6f879b" stroke-width="4"><path d="M210 235H215"/><path d="M370 205C410 150 430 125 455 125"/><path d="M400 235H445"/><path d="M635 260H700"/><path d="M785 285V355"/><path d="M540 315V397H700"/><path d="M305 290V380"/></g>
+  <g fill="#6f879b"><polygon points="207,227 222,235 207,243"/><polygon points="445,117 460,125 445,133"/><polygon points="435,227 450,235 435,243"/><polygon points="690,252 705,260 690,268"/><polygon points="777,345 785,360 793,345"/><polygon points="690,389 705,397 690,405"/><polygon points="297,370 305,385 313,370"/></g>
+  <g font-family="Noto Sans CJK SC, sans-serif" font-size="14" fill="#526679"><text x="397" y="152">是</text><text x="412" y="224">否</text><text x="657" y="249">是</text><text x="554" y="345">否</text><text x="318" y="337">不可自动解决</text></g>
+  <text x="525" y="505" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="16" fill="#526679">面向用户的错误卡只呈现影响、自动动作和可选操作；内部错误码留在诊断层。</text>
+</svg>

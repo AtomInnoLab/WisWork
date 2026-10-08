@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="356" viewBox="0 0 1050 550">
+  <rect width="1050" height="550" fill="#f6f8fb"/>
+  <text x="45" y="45" font-family="Noto Sans CJK SC, sans-serif" font-size="26" font-weight="700" fill="#12243d">一个 PC capability，多个相互隔离的 PowerPoint 文档会话</text>
+  <rect x="385" y="80" width="280" height="90" rx="16" fill="#dff1e6" stroke="#3d8e5b" stroke-width="2"/>
+  <text x="525" y="118" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="20" font-weight="700" fill="#205b39">用户级 PC Capability</text>
+  <text x="525" y="146" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="14" fill="#35694b">登录、模型、解析、缓存可以共享</text>
+  <rect x="380" y="210" width="290" height="76" rx="16" fill="#fff0e6" stroke="#d56b2d" stroke-width="2"/>
+  <text x="525" y="244" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="20" font-weight="700" fill="#8b431d">Relay 多路复用</text>
+  <text x="525" y="270" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="14" fill="#7a5037">按 sessionId 路由 · 公平队列 · 反压</text>
+  <g font-family="Noto Sans CJK SC, sans-serif">
+    <rect x="55" y="355" width="275" height="135" rx="16" fill="#e8f2f9" stroke="#2f80a8" stroke-width="2"/>
+    <text x="192" y="393" text-anchor="middle" font-size="19" font-weight="700" fill="#1d5578">文档 A · Session A</text>
+    <text x="82" y="427" font-size="14" fill="#365a70">Project A · Run A · ToolQueue A</text><text x="82" y="456" font-size="14" fill="#365a70">revision A · 独立取消/恢复</text>
+    <rect x="388" y="355" width="275" height="135" rx="16" fill="#e8f2f9" stroke="#2f80a8" stroke-width="2"/>
+    <text x="525" y="393" text-anchor="middle" font-size="19" font-weight="700" fill="#1d5578">文档 B · Session B</text>
+    <text x="415" y="427" font-size="14" fill="#365a70">Project B · Run B · ToolQueue B</text><text x="415" y="456" font-size="14" fill="#365a70">revision B · 独立取消/恢复</text>
+    <rect x="721" y="355" width="275" height="135" rx="16" fill="#e8f2f9" stroke="#2f80a8" stroke-width="2"/>
+    <text x="858" y="393" text-anchor="middle" font-size="19" font-weight="700" fill="#1d5578">文档 C · Session C</text>
+    <text x="748" y="427" font-size="14" fill="#365a70">Project C · Run C · ToolQueue C</text><text x="748" y="456" font-size="14" fill="#365a70">revision C · 独立取消/恢复</text>
+  </g>
+  <g fill="none" stroke="#5b7890" stroke-width="4"><path d="M525 170V210"/><path d="M525 286V320H192V355"/><path d="M525 286V355"/><path d="M525 320H858V355"/></g>
+  <g fill="#5b7890"><polygon points="185,345 192,359 199,345"/><polygon points="518,345 525,359 532,345"/><polygon points="851,345 858,359 865,345"/></g>
+  <text x="525" y="530" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="16" fill="#526679">共享能力，不共享文档身份、任务状态或写入队列；任何操作都不能依赖“最近连接的 PowerPoint”。</text>
+</svg>

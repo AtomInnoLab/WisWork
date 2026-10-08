@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="367" viewBox="0 0 1000 540">
+  <rect width="1000" height="540" fill="#f5f8fb"/>
+  <text x="50" y="48" font-family="Noto Sans CJK SC, sans-serif" font-size="26" font-weight="700" fill="#12243d">Office 插件是产品工作面，PC 与 Relay 提供能力</text>
+  <rect x="55" y="105" width="360" height="330" rx="18" fill="#102a43"/>
+  <text x="85" y="150" font-family="Noto Sans CJK SC, sans-serif" font-size="23" font-weight="700" fill="#ffffff">PowerPoint Taskpane</text>
+  <text x="85" y="183" font-family="Noto Sans CJK SC, sans-serif" font-size="15" fill="#bfe3f4">用户停留和决策的主界面</text>
+  <g font-family="Noto Sans CJK SC, sans-serif" font-size="17" fill="#ffffff">
+    <text x="90" y="235">• 当前文档、页面与选区</text><text x="90" y="275">• 任务输入、附件与计划</text>
+    <text x="90" y="315">• 阶段进度与页面审阅</text><text x="90" y="355">• 暂停、恢复、撤销与交付</text>
+    <text x="90" y="395">• PowerPoint 原生写入与回读</text>
+  </g>
+  <rect x="585" y="90" width="350" height="170" rx="18" fill="#dff1e6" stroke="#3a8b5b" stroke-width="2"/>
+  <text x="615" y="132" font-family="Noto Sans CJK SC, sans-serif" font-size="22" font-weight="700" fill="#195b38">WisWork PC</text>
+  <g font-family="Noto Sans CJK SC, sans-serif" font-size="16" fill="#244b37">
+    <text x="615" y="173">模型与 Provider 容错 · 项目持久化</text><text x="615" y="205">PDF 解析 · 图片下载/转码 · 缓存</text>
+    <text x="615" y="237">长任务调度 · 回执聚合 · 诊断</text>
+  </g>
+  <rect x="585" y="315" width="350" height="135" rx="18" fill="#fff0e6" stroke="#d56b2d" stroke-width="2"/>
+  <text x="615" y="357" font-family="Noto Sans CJK SC, sans-serif" font-size="22" font-weight="700" fill="#8f3f16">Relay</text>
+  <g font-family="Noto Sans CJK SC, sans-serif" font-size="16" fill="#6e3a20">
+    <text x="615" y="398">安全配对 · 多会话路由 · 分片传输</text><text x="615" y="430">心跳重连 · 反压 · 取消</text>
+  </g>
+  <path d="M415 205 C495 205 505 170 585 170" fill="none" stroke="#2f80a8" stroke-width="5"/>
+  <polygon points="575,160 595,170 575,180" fill="#2f80a8"/>
+  <path d="M415 345 C495 345 505 380 585 380" fill="none" stroke="#d56b2d" stroke-width="5"/>
+  <polygon points="575,370 595,380 575,390" fill="#d56b2d"/>
+  <text x="455" y="154" font-family="Noto Sans CJK SC, sans-serif" font-size="14" fill="#2f80a8">能力调用 / 项目事件</text>
+  <text x="460" y="410" font-family="Noto Sans CJK SC, sans-serif" font-size="14" fill="#a34c1b">ACP + 安全传输</text>
+  <text x="55" y="495" font-family="Noto Sans CJK SC, sans-serif" font-size="16" fill="#526679">权威状态：Project 在 PC 持久化；文档上下文在插件；Relay 不保存业务真相。</text>
+</svg>
