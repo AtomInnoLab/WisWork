@@ -7,8 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 
 // Pin resolution to this repo's workspace sources (matches tsconfig paths;
 // avoids bundling stale implementations when node_modules links point elsewhere)
-const workspaceAlias = {
-  // Subpath before the bare name: string aliases are prefix replacements
+const workspaceAlias = Object.entries({
   '@wiswork/agent-core': resolve(here, '../../packages/agent-core/src/index.ts'),
   '@wiswork/presentation-ops': resolve(here, '../../packages/presentation-ops/src/index.ts'),
   '@wiswork/pptx-engine/table-grid': resolve(here, '../../packages/pptx-engine/src/table-grid.ts'),
@@ -23,7 +22,11 @@ const workspaceAlias = {
   '@wiswork/pptx-render/coords': resolve(here, '../../packages/pptx-render/src/coords.ts'),
   '@wiswork/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
   '@wiswork/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
-}
+}).map(([name, replacement]) => ({
+  // Match only the named export; other subpaths must use the package exports map.
+  find: new RegExp(`^${name}$`),
+  replacement,
+}))
 
 export default defineConfig({
   // Main process/preload must bundle @wiswork/* sources (they are pulled in as TS

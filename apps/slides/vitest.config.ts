@@ -8,8 +8,7 @@ export default defineConfig({
   define: { __WISWORK_SLIDES_ACCEPTANCE_E2E__: 'false' },
   // Pin resolution to this repo's workspace sources (matches tsconfig paths)
   resolve: {
-    alias: {
-      // Subpath before the bare name: string aliases are prefix replacements
+    alias: Object.entries({
       '@wiswork/pptx-engine/table-grid': resolve(
         here,
         '../../packages/pptx-engine/src/table-grid.ts',
@@ -26,7 +25,11 @@ export default defineConfig({
       '@wiswork/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
       '@wiswork/presentation-ops': resolve(here, '../../packages/presentation-ops/src/index.ts'),
       '@wiswork/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
-    },
+    }).map(([name, replacement]) => ({
+      // Keep bare-package aliases from capturing exported subpaths.
+      find: new RegExp(`^${name}$`),
+      replacement,
+    })),
   },
   test: {
     include: ['tests/**/*.test.ts'],
