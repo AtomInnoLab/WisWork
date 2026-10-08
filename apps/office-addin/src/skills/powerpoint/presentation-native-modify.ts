@@ -1,3 +1,4 @@
+import { equivalentPowerPointText } from './powerpoint-text.js'
 import { verifyNativeTextStylePackage } from './presentation-native-text-style.js'
 import type { AgentSkill, AgentToolDef } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
@@ -230,7 +231,7 @@ export function createPresentationNativeModifySkill(options: Options) {
           await current()
           if (text.slideId !== slideId || text.shapeId !== op.shape_id)
             throw Error('presentation_document_changed')
-          return text.text === op.text
+          return equivalentPowerPointText(text.text, op.text)
         }
         if (op.op === 'set_shape_text_style') {
           if (!options.adapter.readShapeTextStyle) throw Error('office_api_unsupported')

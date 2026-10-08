@@ -1,3 +1,4 @@
+import { equivalentPowerPointText as equivalentText } from './powerpoint-text.js'
 import { masterOperationKey, masterStateValuesFingerprint } from './presentation-master-program.js'
 import {
   parsePowerPointStyleDependencies,
@@ -531,11 +532,6 @@ function finite(value: unknown): number {
 
 function string(value: unknown, maximum = 256): string {
   return typeof value === 'string' ? value.slice(0, maximum) : ''
-}
-
-function equivalentText(actual: string, expected: string): boolean {
-  const normalize = (value: string) => value.replace(/\r\n|\r|\v/g, '\n')
-  return normalize(actual) === normalize(expected)
 }
 
 function shapeInfo(value: RuntimeRecord): PowerPointShape {

@@ -1,3 +1,4 @@
+import { equivalentPowerPointText } from './powerpoint-text.js'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import type { PowerPointDeclarativeOperation } from './browser-powerpoint-adapter.js'
 import { loadBoundedZip, MAX_PPTX_XML_BYTES } from './powerpoint-package.js'
@@ -292,7 +293,7 @@ function textMatches(
         .join(''),
     )
   }
-  requireProof(strings.join('\n') === expected)
+  requireProof(equivalentPowerPointText(strings.join('\n'), expected))
 }
 function matches(element: Xml, operation: NativeAddOperation): void {
   requireProof(

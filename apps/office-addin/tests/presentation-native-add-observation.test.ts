@@ -311,3 +311,29 @@ it('requires the exact requested italic state for a durably added text box', asy
     await observePowerPointNativeAdd(f.before, await f.pack(f.prefix(1)), operations),
   ).toMatchObject({ status: 'conflict' })
 })
+
+it.each(['\r', '\v', '\r\n', 'wrong text'])(
+  'checks equivalent paragraph separators in native-add package proof: %j',
+  async (separator) => {
+    const f = await fixture()
+    const operations = structuredClone(f.operations)
+    const text = operations[0]!
+    if (text.op !== 'add_text_box') throw Error('unexpected fixture')
+    text.text =
+      separator === 'wrong text'
+        ? 'First\nDifferent\nThird'
+        : ['First', 'Second', 'Third'].join(separator)
+    const paragraph = f.added[0]!.match(/<a:p>[^]*?<\/a:p>/)![0]
+    const paragraphs = ['First', 'Second', 'Third']
+      .map((line) => paragraph.replace(/<a:t>[^]*?<\/a:t>/, `<a:t>${line}</a:t>`))
+      .join('')
+    const node = f.added[0]!.replace(paragraph, paragraphs)
+    const current = f.baseline.replace('</p:spTree>', node + '</p:spTree>')
+    const proof = await observePowerPointNativeAdd(f.before, await f.pack(current), operations)
+    expect(proof).toMatchObject(
+      separator === 'wrong text'
+        ? { status: 'conflict', completedCount: 0 }
+        : { status: 'prefix_partial', completedCount: 1 },
+    )
+  },
+)
